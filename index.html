@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#020617" />
+    <meta name="description" content="Plataforma de conferência de retorno de rota com controle físico de produtos e ativos de giro, reconciliação fiscal e dashboard gerencial." />
+    <meta property="og:title" content="Aferição de Retorno de Rota - Pau Brasil Guarabira" />
+    <meta property="og:description" content="Plataforma de conferência de retorno de rota com controle físico de produtos e ativos de giro, reconciliação fiscal e dashboard gerencial." />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- Desativação de Cache no Navegador -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="icon" type="image/jpeg" href="./pau_brasil_logo.jpg" />
+    <title>Aferição de Retorno de Rota - Pau Brasil Guarabira</title>
+  </head>
+  <body>
+    <div id="root">
+      <div id="initial-loading-splash" style="min-height: 100vh; background: #020617; color: #94a3b8; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: system-ui, -apple-system, sans-serif;">
+        <div style="width: 36px; height: 36px; border: 3px solid rgba(255,255,255,0.1); border-top-color: #3b82f6; border-radius: 50%; animation: initialSpin 1s linear infinite; margin-bottom: 1rem;"></div>
+        <div style="font-size: 0.875rem; font-weight: 500; letter-spacing: 0.05em; color: #cbd5e1;">CARREGANDO PLATAFORMA...</div>
+        <style>@keyframes initialSpin { to { transform: rotate(360deg); } }</style>
+      </div>
+    </div>
+    <script>
+      function showRawSourceWarning() {
+        var splash = document.getElementById('initial-loading-splash');
+        if (splash && (window.location.hostname.includes('github.io') || !window.location.hostname.includes('ais-dev'))) {
+          splash.innerHTML = `
+            <div style="max-width: 520px; width: 90%; background: #0f172a; border: 1px solid #1e293b; border-radius: 1rem; padding: 2rem; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.7); text-align: center; font-family: system-ui, -apple-system, sans-serif;">
+              <div style="display: inline-flex; padding: 0.75rem; background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 0.75rem; color: #f59e0b; margin-bottom: 1rem;">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+              </div>
+              <h2 style="font-size: 1.15rem; font-weight: 800; margin-bottom: 0.5rem; color: #ffffff;">Ajuste de Publicação no GitHub Pages</h2>
+              <p style="font-size: 0.825rem; color: #94a3b8; line-height: 1.5; margin-bottom: 1.25rem;">
+                O GitHub Pages está configurado para servir o código bruto da branch <strong>main</strong>. Para executar a aplicação compilada pelo Vite:
+              </p>
+              <div style="background: #020617; border: 1px solid #334155; border-radius: 0.75rem; padding: 1rem; text-align: left; font-size: 0.8rem; color: #cbd5e1; margin-bottom: 1.25rem; line-height: 1.6;">
+                <p style="margin: 0 0 0.5rem 0; font-weight: 700; color: #38bdf8;">Como ativar em 2 cliques:</p>
+                <ol style="margin: 0; padding-left: 1.25rem;">
+                  <li>Abra o repositório no GitHub e vá em <strong>Settings &gt; Pages</strong></li>
+                  <li>Em <strong>Build and deployment &gt; Source</strong>, selecione:<br/>
+                    <strong style="color: #4ade80;">"GitHub Actions"</strong> <em>(Recomendado)</em><br/>
+                    ou a branch <strong style="color: #4ade80;">"gh-pages"</strong>
+                  </li>
+                  <li>Pronto! Aguarde o término da publicação automática.</li>
+                </ol>
+              </div>
+              <button onclick="window.location.reload()" style="background: #2563eb; color: #fff; border: none; padding: 0.7rem 1.5rem; border-radius: 0.5rem; font-weight: 700; cursor: pointer; font-size: 0.825rem;">
+                Recarregar Página
+              </button>
+            </div>
+          `;
+        }
+      }
+      setTimeout(function() {
+        var splash = document.getElementById('initial-loading-splash');
+        if (splash && window.location.hostname.includes('github.io')) {
+          showRawSourceWarning();
+        }
+      }, 4000);
+    </script>
+    <script type="module" src="/src/main.tsx" onerror="showRawSourceWarning()"></script>
+    <script>
+      // Desativa e remove qualquer Service Worker e limpa todo o Cache Storage da plataforma
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(registrations) {
+          for (var i = 0; i < registrations.length; i++) {
+            registrations[i].unregister();
+          }
+        }).catch(function() {});
+      }
+      if ('caches' in window) {
+        caches.keys().then(function(keys) {
+          for (var i = 0; i < keys.length; i++) {
+            caches.delete(keys[i]);
+          }
+        }).catch(function() {});
+      }
+    </script>
+  </body>
+</html>
+

@@ -1,0 +1,69 @@
+# Workflow para compilar com Vite e publicar automaticamente no GitHub Pages
+name: Deploy static content to Pages
+
+on:
+  push:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Instalar dependencias
+        run: npm install --legacy-peer-deps
+
+      - name: Compilar aplicacao (Vite Build)
+        run: npm run build
+
+      - name: Preparar arquivos estaticos (nojekyll e 404)
+        run: |
+          touch dist/.nojekyll
+          if [ -f dist/index.html ]; then
+            cp dist/index.html dist/404.html
+          fi
+
+      - name: Publicar backup na branch gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        continue-on-error: true
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          keep_files: false
+
+      - name: Configurar GitHub Pages nativo
+        id: pages_config
+        uses: actions/configure-pages@v5
+        continue-on-error: true
+
+      - name: Upload artifact (dist compilado)
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './dist'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
