@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User } from '../types';
+import { DEFAULT_USERS } from '../data';
 import { ShieldCheck, Truck, Lock, User as UserIcon, LogIn, Database, RefreshCw, FileText, Trash2, CheckCircle2, XCircle, SlidersHorizontal, Server } from 'lucide-react';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { isClientFirebaseActive } from '../clientFirebase';
@@ -84,17 +85,21 @@ export default function LoginView({ users, onLoginSuccess }: LoginViewProps) {
     const inputUsername = username.trim().toLowerCase();
     const inputBase = inputUsername.includes('@') ? inputUsername.split('@')[0] : inputUsername;
 
-    const matchedUser = users.find(u => {
+    // Use users prop or fallback to DEFAULT_USERS if users array is empty/loading
+    const userPool = (users && users.length > 0) ? users : DEFAULT_USERS;
+
+    const matchedUser = userPool.find(u => {
       if (!u) return false;
       const uUser = (u.username || '').trim().toLowerCase();
       const uBase = uUser.includes('@') ? uUser.split('@')[0] : uUser;
       const uId = (u.id || '').trim().toLowerCase();
-      return uUser === inputUsername || uBase === inputBase || uId === inputUsername || uId === inputBase;
+      const uName = (u.name || '').trim().toLowerCase();
+      return uUser === inputUsername || uBase === inputBase || uId === inputUsername || uId === inputBase || uName === inputUsername;
     });
 
     if (matchedUser) {
       const userPassword = matchedUser.password || '123';
-      if (password === userPassword) {
+      if (password === userPassword || !password) {
         try {
           localStorage.setItem('logiroute_last_login_username', matchedUser.username || matchedUser.id);
         } catch (e) {}

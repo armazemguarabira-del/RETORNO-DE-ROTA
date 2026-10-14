@@ -892,8 +892,8 @@ export default function GestorDashboard({
     if (!audit) return 100;
     // A recheck occurred if the audit went through "reconferencia" state or has any rePhysicalQty set
     const hasReconf = (audit.history || []).some(h => 
-      h.action.toLowerCase().includes('reconferência') || 
-      h.action.toLowerCase().includes('recontagem')
+      (h.action || '').toLowerCase().includes('reconferência') || 
+      (h.action || '').toLowerCase().includes('recontagem')
     ) || (audit.items || []).some(i => i.rePhysicalQty !== undefined) || (audit.assets || []).some(a => a.rePhysicalQty !== undefined);
 
     if (!hasReconf) {
@@ -967,7 +967,7 @@ export default function GestorDashboard({
   // 1. Acuracidade Real da 1ª Conferência (First-Pass Accuracy sem recontagem)
   const allFinishedAudits = audits.filter(a => a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || (a.status as string) === 'fechado');
   const firstPassAuditsOk = allFinishedAudits.filter(a => {
-    const hasRecount = ((a as any).recountCount && (a as any).recountCount > 0) || (a.history && a.history.some(h => h.action?.toLowerCase().includes('recontagem') || h.action?.toLowerCase().includes('reabertura')));
+    const hasRecount = ((a as any).recountCount && (a as any).recountCount > 0) || (a.history && a.history.some(h => (h.action || '').toLowerCase().includes('recontagem') || (h.action || '').toLowerCase().includes('reabertura')));
     return !hasRecount && a.status === 'finalizado_ok';
   });
   const firstPassAccuracyPct = allFinishedAudits.length > 0
@@ -1152,7 +1152,7 @@ export default function GestorDashboard({
     }
 
     const ranking = Array.from(allNames).map(name => {
-      const records = unifiedUnloadingHistory.filter(h => h.empilhadorName.toLowerCase() === name.toLowerCase());
+      const records = unifiedUnloadingHistory.filter(h => (h.empilhadorName || '').toLowerCase() === (name || '').toLowerCase());
       const totalVehicles = records.length;
       const totalMins = records.reduce((s, r) => s + r.durationMinutes, 0);
       const avgMins = totalVehicles > 0 ? Number((totalMins / totalVehicles).toFixed(1)) : 22;
@@ -1164,16 +1164,16 @@ export default function GestorDashboard({
       const efdPct = eligible.length > 0 ? Number(((onTime / eligible.length) * 100).toFixed(1)) : 100;
       const pernoites = records.filter(r => r.isPernoite).length;
 
-      const empObj = empilhadores.find(e => e.name.toLowerCase() === name.toLowerCase());
+      const empObj = empilhadores.find(e => (e.name || '').toLowerCase() === (name || '').toLowerCase());
 
       let formattedShift = 'Turno Geral / Pátio';
       if (empObj?.shift) {
         formattedShift = empObj.shift === '1_TURNO' ? '1º Turno (< 14h)' : empObj.shift === '2_TURNO' ? '2º Turno (≥ 14h)' : empObj.shift.replace('_', ' ');
-      } else if (name.toLowerCase().includes('paulo')) {
+      } else if ((name || '').toLowerCase().includes('paulo')) {
         formattedShift = '1º Turno (< 14h)';
-      } else if (name.toLowerCase().includes('josé') || name.toLowerCase().includes('jose')) {
+      } else if ((name || '').toLowerCase().includes('josé') || (name || '').toLowerCase().includes('jose')) {
         formattedShift = '2º Turno (≥ 14h)';
-      } else if (name.toLowerCase().includes('marivaldo')) {
+      } else if ((name || '').toLowerCase().includes('marivaldo')) {
         formattedShift = 'Turno Geral / Pátio';
       }
 
@@ -1528,7 +1528,7 @@ export default function GestorDashboard({
 
       // Harvest history entries
       (audit.history || []).forEach((h, index) => {
-        const actionLower = h.action.toLowerCase();
+        const actionLower = (h.action || '').toLowerCase();
         
         // Let's check if the action is aligned or ciente
         const isValeAction = actionLower.includes('vale') || actionLower.includes('gerado vale');
@@ -1545,21 +1545,21 @@ export default function GestorDashboard({
 
         list.push({
           id: `${audit.id}_h_${index}`,
-          routeMap: audit.routeMap,
-          plate: audit.plate,
-          arrivalDate: audit.arrivalDate,
-          timestamp: h.timestamp,
-          user: h.user,
-          action: h.action,
+          routeMap: audit.routeMap || 'N/A',
+          plate: audit.plate || 'N/A',
+          arrivalDate: audit.arrivalDate || '',
+          timestamp: h.timestamp || new Date().toISOString(),
+          user: h.user || 'Sistema',
+          action: h.action || 'Ação Registrada',
           details: h.details || audit.correctiveActionNotes || audit.reconciliationNotes,
-          auditStatus: audit.status
+          auditStatus: audit.status || 'pendente'
         });
       });
     });
 
     // Also harvest vales
     vales.forEach(vale => {
-      const alreadyInList = list.some(item => item.routeMap === vale.routeMap && item.action.toLowerCase().includes('vale') && item.details?.includes(`R$ ${vale.valor.toFixed(2)}`));
+      const alreadyInList = list.some(item => item.routeMap === vale.routeMap && (item.action || '').toLowerCase().includes('vale') && item.details?.includes(`R$ ${vale.valor.toFixed(2)}`));
       if (!alreadyInList) {
         list.push({
           id: `vale_${vale.id}`,
@@ -1689,7 +1689,7 @@ export default function GestorDashboard({
     .filter(d => {
       if (!rankingSearch.trim()) return true;
       const q = rankingSearch.toLowerCase();
-      return d.name.toLowerCase().includes(q) || d.id.toLowerCase().includes(q);
+      return (d.name || '').toLowerCase().includes(q) || (d.id || '').toLowerCase().includes(q);
     })
     .sort((a, b) => {
       if (rankingSortMetric === 'valor') {
@@ -1895,7 +1895,7 @@ export default function GestorDashboard({
   const filteredConferenteList = useMemo(() => {
     if (!conferenteSearch.trim()) return conferenteAnalyticsList;
     const q = conferenteSearch.toLowerCase().trim();
-    return conferenteAnalyticsList.filter(c => c.name.toLowerCase().includes(q) || c.username.toLowerCase().includes(q));
+    return conferenteAnalyticsList.filter(c => (c.name || '').toLowerCase().includes(q) || (c.username || '').toLowerCase().includes(q));
   }, [conferenteAnalyticsList, conferenteSearch]);
 
   // Calculation of Refugos (Waste/Avarias) statistics for Drivers, Motives tree, and Active Assets (Ativos de Giro)
@@ -2147,8 +2147,8 @@ export default function GestorDashboard({
       onSaveUsers([...users, newUser]);
       if (newUserRole === 'empilhador' && onSaveEmpilhadores) {
         const existingEmp = empilhadores.find(e => 
-          e.matricula.toLowerCase() === formattedUsername.toLowerCase() || 
-          e.name.toLowerCase() === formattedName.toLowerCase()
+          (e.matricula || '').toLowerCase() === (formattedUsername || '').toLowerCase() || 
+          (e.name || '').toLowerCase() === (formattedName || '').toLowerCase()
         );
         if (!existingEmp) {
           const newEmp: Empilhador = {
@@ -2204,8 +2204,8 @@ export default function GestorDashboard({
         if (userToRemove && userToRemove.role === 'empilhador' && onSaveEmpilhadores) {
           const empToRemove = empilhadores.find(e => 
             e.id === id || 
-            (userToRemove.username && e.matricula.toLowerCase() === userToRemove.username.toLowerCase()) ||
-            e.name.toLowerCase() === userToRemove.name.toLowerCase()
+            (userToRemove.username && (e.matricula || '').toLowerCase() === userToRemove.username.toLowerCase()) ||
+            ((e.name || '').toLowerCase() === (userToRemove.name || '').toLowerCase())
           );
           if (empToRemove) {
             onSaveEmpilhadores(empilhadores.filter(e => e.id !== empToRemove.id));
@@ -3544,7 +3544,7 @@ export default function GestorDashboard({
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-xs font-medium text-slate-700">
                   {empilhadorRankingList
-                    .filter(item => item.name.toLowerCase().includes(empilhadorRankingSearch.toLowerCase()))
+                    .filter(item => (item.name || '').toLowerCase().includes((empilhadorRankingSearch || '').toLowerCase()))
                     .map((item, idx) => (
                       <tr key={item.id} className="hover:bg-slate-50/80 transition">
                         <td className="py-3.5 px-4 text-center font-bold font-mono">
@@ -5038,9 +5038,9 @@ export default function GestorDashboard({
                 {(() => {
                   const filteredVales = vales.filter(v => {
                     const matchesStatus = valesFilter === 'todos' || v.status === valesFilter;
-                    const matchesSearch = v.colaboradorName.toLowerCase().includes(valesSearch.toLowerCase()) || 
-                                          v.descricao.toLowerCase().includes(valesSearch.toLowerCase()) ||
-                                          v.routeMap?.toLowerCase().includes(valesSearch.toLowerCase());
+                    const matchesSearch = (v.colaboradorName || '').toLowerCase().includes((valesSearch || '').toLowerCase()) || 
+                                          (v.descricao || '').toLowerCase().includes((valesSearch || '').toLowerCase()) ||
+                                          (v.routeMap || '').toLowerCase().includes((valesSearch || '').toLowerCase());
                     return matchesStatus && matchesSearch;
                   });
 
@@ -5951,7 +5951,7 @@ export default function GestorDashboard({
                     </thead>
                     <tbody className="bg-white divide-y divide-slate-100">
                       {products
-                        .filter(p => p.description.toLowerCase().includes(searchQuery.toLowerCase()) || p.code.includes(searchQuery))
+                        .filter(p => (p.description || '').toLowerCase().includes((searchQuery || '').toLowerCase()) || (p.code || '').includes(searchQuery))
                         .map(p => (
                           <tr key={p.code} className="hover:bg-slate-50">
                             <td className="px-4 py-2 font-mono font-bold text-slate-600 bg-slate-50/50">{p.code}</td>
@@ -6233,7 +6233,7 @@ export default function GestorDashboard({
                     </thead>
                     <tbody className="bg-white divide-y divide-slate-100">
                       {drivers
-                        .filter(d => d.name.toLowerCase().includes(searchQuery.toLowerCase()) || d.cpf.includes(searchQuery) || d.id.includes(searchQuery))
+                        .filter(d => (d.name || '').toLowerCase().includes((searchQuery || '').toLowerCase()) || (d.cpf || '').includes(searchQuery) || (d.id || '').includes(searchQuery))
                         .map(d => (
                           <tr key={d.id} className="hover:bg-slate-50">
                             <td className="px-4 py-2 font-mono font-bold text-slate-600 bg-slate-50/50 flex items-center">
@@ -7330,7 +7330,7 @@ export default function GestorDashboard({
                       const auxiliarActions = (audits || []).filter(audit => {
                         if (!audit) return false;
                         if (audit.gestorAcknowledgedSurplus) return false;
-                        const hasAuxiliarHistory = (audit.history || []).some(h => h.user.includes('Auxiliar') || h.user.toLowerCase().includes('auxiliar'));
+                        const hasAuxiliarHistory = (audit.history || []).some(h => (h.user || '').includes('Auxiliar') || (h.user || '').toLowerCase().includes('auxiliar'));
                         const isSent = audit.surplusFlowStatus === 'ENVIADO';
                         return hasAuxiliarHistory || isSent;
                       });
@@ -7669,10 +7669,10 @@ export default function GestorDashboard({
                             {isManualSobraProdDropdownOpen && (
                               <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-56 overflow-y-auto font-sans text-xs">
                                 {(() => {
-                                  const query = manualSobraSearch.toLowerCase().trim();
+                                  const query = (manualSobraSearch || '').toLowerCase().trim();
                                   const filtered = products.filter(p => 
-                                    p.code.toLowerCase().includes(query) || 
-                                    p.description.toLowerCase().includes(query)
+                                    (p.code || '').toLowerCase().includes(query) || 
+                                    (p.description || '').toLowerCase().includes(query)
                                   );
 
                                   if (filtered.length === 0) {
@@ -8417,11 +8417,11 @@ export default function GestorDashboard({
                                   <td className="p-3 font-medium text-slate-800">{item.user}</td>
                                   <td className="p-3">
                                     <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${
-                                      item.action.toLowerCase().includes('envio') || item.action.toLowerCase().includes('enviado')
+                                      (item.action || '').toLowerCase().includes('envio') || (item.action || '').toLowerCase().includes('enviado')
                                         ? 'bg-emerald-100 text-emerald-800'
-                                        : item.action.toLowerCase().includes('alinhada') || item.action.toLowerCase().includes('previsão') || item.action.toLowerCase().includes('alinhado')
+                                        : (item.action || '').toLowerCase().includes('alinhada') || (item.action || '').toLowerCase().includes('previsão') || (item.action || '').toLowerCase().includes('alinhado')
                                         ? 'bg-amber-100 text-amber-800'
-                                        : item.action.toLowerCase().includes('vale')
+                                        : (item.action || '').toLowerCase().includes('vale')
                                         ? 'bg-red-100 text-red-800'
                                         : 'bg-indigo-100 text-indigo-800'
                                     }`}>
@@ -9358,9 +9358,9 @@ export default function GestorDashboard({
               const closedAudits = audits.filter(a => a.status === 'finalizado_ok' || a.status === 'finalizado_divergente');
               const filtered = closedAudits.filter(a => {
                 const driverName = drivers.find(d => d.id === a.driverId)?.name || a.driverId || '';
-                const matchesSearch = a.routeMap.toLowerCase().includes(historySearchQuery.toLowerCase()) ||
-                                      a.plate.toLowerCase().includes(historySearchQuery.toLowerCase()) ||
-                                      driverName.toLowerCase().includes(historySearchQuery.toLowerCase());
+                const matchesSearch = (a.routeMap || '').toLowerCase().includes((historySearchQuery || '').toLowerCase()) ||
+                                      (a.plate || '').toLowerCase().includes((historySearchQuery || '').toLowerCase()) ||
+                                      (driverName || '').toLowerCase().includes((historySearchQuery || '').toLowerCase());
                 
                 let matchesDate = true;
                 if (historyStartDate) matchesDate = matchesDate && (a.arrivalDate >= historyStartDate);
@@ -9461,7 +9461,7 @@ export default function GestorDashboard({
                   <div>
                     <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider font-mono">Envios & Sobras</span>
                     <span className="text-xl font-black text-slate-900">
-                      {allSobrasFaltasActions.filter(a => a.action.toLowerCase().includes('sobra') || a.action.toLowerCase().includes('envio')).length}
+                      {allSobrasFaltasActions.filter(a => (a.action || '').toLowerCase().includes('sobra') || (a.action || '').toLowerCase().includes('envio')).length}
                     </span>
                   </div>
                 </div>
@@ -9473,7 +9473,7 @@ export default function GestorDashboard({
                   <div>
                     <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider font-mono">Vales & Faltas</span>
                     <span className="text-xl font-black text-slate-900">
-                      {allSobrasFaltasActions.filter(a => a.action.toLowerCase().includes('vale') || a.action.toLowerCase().includes('falta')).length}
+                      {allSobrasFaltasActions.filter(a => (a.action || '').toLowerCase().includes('vale') || (a.action || '').toLowerCase().includes('falta')).length}
                     </span>
                   </div>
                 </div>
@@ -9485,7 +9485,7 @@ export default function GestorDashboard({
                   <div>
                     <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider font-mono">Baixas Diretas</span>
                     <span className="text-xl font-black text-slate-900">
-                      {allSobrasFaltasActions.filter(a => a.action.toLowerCase().includes('baixa')).length}
+                      {allSobrasFaltasActions.filter(a => (a.action || '').toLowerCase().includes('baixa')).length}
                     </span>
                   </div>
                 </div>
@@ -9570,24 +9570,24 @@ export default function GestorDashboard({
 
                           // Type filter
                           if (actionsTypeFilter === 'sobra') {
-                            const lower = act.action.toLowerCase();
+                            const lower = (act.action || '').toLowerCase();
                             if (!lower.includes('sobra') && !lower.includes('envio')) return false;
                           }
                           if (actionsTypeFilter === 'vale') {
-                            const lower = act.action.toLowerCase();
+                            const lower = (act.action || '').toLowerCase();
                             if (!lower.includes('vale') && !lower.includes('falta')) return false;
                           }
                           if (actionsTypeFilter === 'baixa') {
-                            if (!act.action.toLowerCase().includes('baixa')) return false;
+                            if (!(act.action || '').toLowerCase().includes('baixa')) return false;
                           }
 
                           // Search filter
                           if (actionsSearchQuery) {
-                            const query = actionsSearchQuery.toLowerCase();
-                            const matchesMap = act.routeMap.toLowerCase().includes(query);
-                            const matchesPlate = act.plate.toLowerCase().includes(query);
-                            const matchesUser = act.user.toLowerCase().includes(query);
-                            const matchesAction = act.action.toLowerCase().includes(query);
+                            const query = (actionsSearchQuery || '').toLowerCase();
+                            const matchesMap = (act.routeMap || '').toLowerCase().includes(query);
+                            const matchesPlate = (act.plate || '').toLowerCase().includes(query);
+                            const matchesUser = (act.user || '').toLowerCase().includes(query);
+                            const matchesAction = (act.action || '').toLowerCase().includes(query);
                             const matchesDetails = (act.details || '').toLowerCase().includes(query);
                             if (!matchesMap && !matchesPlate && !matchesUser && !matchesAction && !matchesDetails) return false;
                           }
@@ -9607,11 +9607,12 @@ export default function GestorDashboard({
 
                         return filteredActions.map(act => {
                           let badgeStyle = "bg-slate-50 text-slate-600 border-slate-200";
-                          if (act.action.toLowerCase().includes('baixa')) {
+                          const actActionLower = (act.action || '').toLowerCase();
+                          if (actActionLower.includes('baixa')) {
                             badgeStyle = "bg-blue-50 text-blue-800 border-blue-200";
-                          } else if (act.action.toLowerCase().includes('vale') || act.action.toLowerCase().includes('falta')) {
+                          } else if (actActionLower.includes('vale') || actActionLower.includes('falta')) {
                             badgeStyle = "bg-red-50 text-red-800 border-red-200";
-                          } else if (act.action.toLowerCase().includes('sobra') || act.action.toLowerCase().includes('envio')) {
+                          } else if (actActionLower.includes('sobra') || actActionLower.includes('envio')) {
                             badgeStyle = "bg-emerald-50 text-emerald-800 border-emerald-200";
                           }
 

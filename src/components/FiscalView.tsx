@@ -3127,8 +3127,8 @@ export default function FiscalView({
       if (filterNB.trim()) {
         const nbQuery = filterNB.trim().toLowerCase();
         const hasMatchedNB = (audit.clientCodeNB || '').toLowerCase().includes(nbQuery) ||
-          audit.routeMap.toLowerCase().includes(nbQuery) ||
-          audit.plate.toLowerCase().includes(nbQuery);
+          (audit.routeMap || '').toLowerCase().includes(nbQuery) ||
+          (audit.plate || '').toLowerCase().includes(nbQuery);
         if (!hasMatchedNB) return false;
       }
 
@@ -5015,9 +5015,9 @@ export default function FiscalView({
   // Filtering history lists
   const filteredHistory = historyAudits.filter(a => {
     const matchesSearch = 
-      a.routeMap.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      a.plate.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      getDriverName(a.driverId).toLowerCase().includes(searchTerm.toLowerCase());
+      (a.routeMap || '').toLowerCase().includes((searchTerm || '').toLowerCase()) ||
+      (a.plate || '').toLowerCase().includes((searchTerm || '').toLowerCase()) ||
+      (getDriverName(a.driverId) || '').toLowerCase().includes((searchTerm || '').toLowerCase());
     
     // Check date bounds if configured
     let matchesDate = true;
@@ -8133,8 +8133,8 @@ export default function FiscalView({
                     if (filterNB.trim()) {
                       const nbQuery = filterNB.trim().toLowerCase();
                       const hasMatchedNB = (audit.clientCodeNB || '').toLowerCase().includes(nbQuery) ||
-                        audit.routeMap.toLowerCase().includes(nbQuery) ||
-                        audit.plate.toLowerCase().includes(nbQuery);
+                        (audit.routeMap || '').toLowerCase().includes(nbQuery) ||
+                        (audit.plate || '').toLowerCase().includes(nbQuery);
                       if (!hasMatchedNB) return false;
                     }
 

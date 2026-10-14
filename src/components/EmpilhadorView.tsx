@@ -41,6 +41,7 @@ import {
   X,
   Printer,
   RefreshCw,
+  RotateCcw,
   Phone,
   User as UserIcon,
   PackageCheck,
@@ -180,7 +181,7 @@ export default function EmpilhadorView({
 
   // Search & Filters
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterCategory, setFilterCategory] = useState<'PENDENTES' | 'DESCARREGADOS' | 'PERNOITES'>('PENDENTES');
+  const [filterCategory, setFilterCategory] = useState<'PENDENTES' | 'DESCARREGADOS'>('PENDENTES');
   const [filterDock, setFilterDock] = useState<string>('TODAS');
   const [filterEmpilhador, setFilterEmpilhador] = useState<string>('TODOS');
   const [filterCiclo, setFilterCiclo] = useState<string>('TODOS');
@@ -362,9 +363,19 @@ export default function EmpilhadorView({
       );
       const isReopeningReq = matchingAudit?.reopeningRequested === true;
       const isSubmittedToFiscal = matchingAudit && (matchingAudit.status === 'conferido_fisico' || matchingAudit.status === 'recontagem_finalizada');
-      const isClosed = (isRouteClosedInAudits(r.routeMap) || (r.status as string) === 'fechado' || isFinalizedInAudit) && !isReopeningReq;
+      const isClosed = (isRouteClosedInAudits(r.routeMap) || (r.status as string) === 'fechado' || (r.status as string) === 'finalizado' || isFinalizedInAudit);
 
-      // Descarregado hoje apenas se houver descarregamento registrado para o retorno de rota
+      // REGRA CRÍTICA 1: Se o mapa foi fechado fiscalmente pela Auxiliar de Logística/Fiscal e NÃO possui solicitação de reabertura, DEVE SUMIR da área de descarregamento
+      if (isClosed && !isReopeningReq) {
+        return;
+      }
+
+      // REGRA CRÍTICA 2: Se foi enviado ao fiscal / em análise e não há pedido de reabertura, não exibir no descarregamento
+      if ((isSubmittedToFiscal || (r.status as string) === 'em_analise') && !isReopeningReq) {
+        return;
+      }
+
+      // Verificação de descarregamento
       const isUnloadedToday = !!(
         (r.unloadingEndTime && r.unloadingEndTime.trim().length > 0) || 
         (matchingAudit?.unloadingEndTime && matchingAudit.unloadingEndTime.trim().length > 0) || 
@@ -372,86 +383,93 @@ export default function EmpilhadorView({
         matchingAudit?.descarregamentoStatus === 'DESCARREGADO'
       );
 
-      // Include if route is open/pending OR if unloaded today
-      if ((!isClosed && !isSubmittedToFiscal && (r.status as string) !== 'em_analise') || isReopeningReq || isUnloadedToday) {
-        seenMapAndPlate.add(key);
+      const isPernoite = !!(r.isPernoite || matchingAudit?.isPernoite || matchingCarregamento?.isPernoite);
 
-        let descarregamentoStatus: ConnectedVehicle['descarregamentoStatus'] = 'AGUARDANDO_DESCARGA';
-        if (r.isPernoite || matchingAudit?.isPernoite || matchingCarregamento?.isPernoite) {
-          descarregamentoStatus = 'PERNOITE';
-        } else if (isUnloadedToday) {
-          descarregamentoStatus = 'DESCARREGADO';
-        } else if (r.descarregamentoStatus) {
-          descarregamentoStatus = r.descarregamentoStatus;
-        } else if (r.unloadingStartTime || matchingAudit?.unloadingStartTime || matchingCarregamento?.status === 'EM_CARREGAMENTO') {
-          descarregamentoStatus = 'EM_DESCARGA';
-        }
+      // REGRA CRÍTICA 3: Filtrar rotas históricas antigas sem atividade de hoje ou pernoite
+      const isRouteDateToday = !r.routeDate || r.routeDate === todayStr || (r.importedAt && r.importedAt.startsWith(todayStr));
+      const isActiveInUnloading = isPernoite || isUnloadedToday || isRouteDateToday || (r.unloadingStartTime && r.unloadingStartTime.trim().length > 0) || r.descarregamentoStatus === 'EM_DESCARGA';
 
-        const startTime = r.unloadingStartTime || matchingAudit?.unloadingStartTime || matchingCarregamento?.startedAt;
-        const endTime = r.unloadingEndTime || matchingAudit?.unloadingEndTime || matchingCarregamento?.completedAt;
-
-        let durationMinutes: number | undefined;
-        if (startTime && endTime) {
-          try {
-            const s = new Date(startTime).getTime();
-            const e = new Date(endTime).getTime();
-            if (!isNaN(s) && !isNaN(e) && e >= s) {
-              durationMinutes = Math.round((e - s) / 60000);
-            }
-          } catch {}
-        }
-
-        let isEfficiencyOnTime = true;
-        if (endTime) {
-          try {
-            const d = new Date(endTime);
-            if (d.getHours() >= 22) isEfficiencyOnTime = false;
-          } catch {}
-        } else {
-          if (new Date().getHours() >= 22) isEfficiencyOnTime = false;
-        }
-
-        const totalPal = r.totalPallets || matchingCarregamento?.totalPallets || resolveCapacityPallets(r.plate);
-        const loadedPal = r.loadedPallets || matchingCarregamento?.loadedPallets || (descarregamentoStatus === 'DESCARREGADO' ? totalPal : 0);
-        const dock = r.dock || matchingAudit?.dock || matchingCarregamento?.dock || 'DOCA 01';
-        const empId = r.empilhadorId || matchingCarregamento?.empilhadorId;
-        const empName = r.empilhadorName || matchingCarregamento?.empilhadorName;
-        const note = r.unloadingNote || matchingAudit?.unloadingNote || matchingCarregamento?.unloadingNote;
-
-        list.push({
-          id: `route_${r.id}`,
-          source: 'imported_route',
-          routeMap: r.routeMap || '—',
-          plate: (r.plate || '').toUpperCase().trim(),
-          driverName: resolveDriverName(r.driverId, (r as any).driverName),
-          driverId: r.driverId,
-          vehicleType: r.vehicleType || matchingCarregamento?.vehicleType || 'TRUCK (10 PAL)',
-          dock,
-          empilhadorId: empId,
-          empilhadorName: empName,
-          forkliftCode: matchingCarregamento?.forkliftCode,
-          routeDate: r.routeDate || todayStr,
-          importedAt: r.importedAt,
-          descarregamentoStatus,
-          unloadingStartTime: startTime,
-          unloadingEndTime: endTime,
-          isPernoite: !!(r.isPernoite || matchingAudit?.isPernoite || matchingCarregamento?.isPernoite),
-          totalPallets: totalPal,
-          loadedPallets: loadedPal,
-          unloadingNote: note,
-          unloadingChecklist: r.unloadingChecklist || matchingAudit?.unloadingChecklist || matchingCarregamento?.unloadingChecklist,
-          auditStatus: matchingAudit?.status || r.status,
-          conferenteName: matchingAudit?.conferenteId,
-          isBlitz: r.isBlitz,
-          durationMinutes,
-          diasCiclo: calculateCiclo(r.routeDate),
-          isEfficiencyOnTime,
-          efficiencyPercentage: isEfficiencyOnTime ? 100 : 80,
-          routeRef: r,
-          auditRef: matchingAudit,
-          carregamentoRef: matchingCarregamento
-        });
+      if (!isActiveInUnloading && !isReopeningReq) {
+        return;
       }
+
+      seenMapAndPlate.add(key);
+
+      let descarregamentoStatus: ConnectedVehicle['descarregamentoStatus'] = 'AGUARDANDO_DESCARGA';
+      if (isPernoite) {
+        descarregamentoStatus = 'PERNOITE';
+      } else if (isUnloadedToday) {
+        descarregamentoStatus = 'DESCARREGADO';
+      } else if (r.descarregamentoStatus) {
+        descarregamentoStatus = r.descarregamentoStatus;
+      } else if (r.unloadingStartTime || matchingAudit?.unloadingStartTime || matchingCarregamento?.status === 'EM_CARREGAMENTO') {
+        descarregamentoStatus = 'EM_DESCARGA';
+      }
+
+      const startTime = r.unloadingStartTime || matchingAudit?.unloadingStartTime || matchingCarregamento?.startedAt;
+      const endTime = r.unloadingEndTime || matchingAudit?.unloadingEndTime || matchingCarregamento?.completedAt;
+
+      let durationMinutes: number | undefined;
+      if (startTime && endTime) {
+        try {
+          const s = new Date(startTime).getTime();
+          const e = new Date(endTime).getTime();
+          if (!isNaN(s) && !isNaN(e) && e >= s) {
+            durationMinutes = Math.round((e - s) / 60000);
+          }
+        } catch {}
+      }
+
+      let isEfficiencyOnTime = true;
+      if (endTime) {
+        try {
+          const d = new Date(endTime);
+          if (d.getHours() >= 22) isEfficiencyOnTime = false;
+        } catch {}
+      } else {
+        if (new Date().getHours() >= 22) isEfficiencyOnTime = false;
+      }
+
+      const totalPal = r.totalPallets || matchingCarregamento?.totalPallets || resolveCapacityPallets(r.plate);
+      const loadedPal = r.loadedPallets || matchingCarregamento?.loadedPallets || (descarregamentoStatus === 'DESCARREGADO' ? totalPal : 0);
+      const dock = r.dock || matchingAudit?.dock || matchingCarregamento?.dock || 'DOCA 01';
+      const empId = r.empilhadorId || matchingCarregamento?.empilhadorId;
+      const empName = r.empilhadorName || matchingCarregamento?.empilhadorName;
+      const note = r.unloadingNote || matchingAudit?.unloadingNote || matchingCarregamento?.unloadingNote;
+
+      list.push({
+        id: `route_${r.id}`,
+        source: 'imported_route',
+        routeMap: r.routeMap || '—',
+        plate: (r.plate || '').toUpperCase().trim(),
+        driverName: resolveDriverName(r.driverId, (r as any).driverName),
+        driverId: r.driverId,
+        vehicleType: r.vehicleType || matchingCarregamento?.vehicleType || 'TRUCK (10 PAL)',
+        dock,
+        empilhadorId: empId,
+        empilhadorName: empName,
+        forkliftCode: matchingCarregamento?.forkliftCode,
+        routeDate: r.routeDate || todayStr,
+        importedAt: r.importedAt,
+        descarregamentoStatus,
+        unloadingStartTime: startTime,
+        unloadingEndTime: endTime,
+        isPernoite,
+        totalPallets: totalPal,
+        loadedPallets: loadedPal,
+        unloadingNote: note,
+        unloadingChecklist: r.unloadingChecklist || matchingAudit?.unloadingChecklist || matchingCarregamento?.unloadingChecklist,
+        auditStatus: matchingAudit?.status || r.status,
+        conferenteName: matchingAudit?.conferenteId,
+        isBlitz: r.isBlitz,
+        durationMinutes,
+        diasCiclo: (r as any).diasCiclo || calculateCiclo(r.routeDate),
+        isEfficiencyOnTime,
+        efficiencyPercentage: isEfficiencyOnTime ? 100 : 80,
+        routeRef: r,
+        auditRef: matchingAudit,
+        carregamentoRef: matchingCarregamento
+      });
     });
 
     // 2. Process active audits or audits unloaded today not already in the list
@@ -463,8 +481,19 @@ export default function EmpilhadorView({
 
       const isReopeningReq = a.reopeningRequested === true;
       const isClosedAudit = (a.status as string) === 'fechado' || a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || (a as any).pdfDownloaded === true || (a as any).surplusFlowStatus === 'BAIXADO';
-      const isAuditActive = (a.status === 'em_aberto' || a.status === 'reconferencia') && !isClosedAudit;
+      
+      // REGRA CRÍTICA: Auditorias encerradas fiscalmente devem sumir
+      if (isClosedAudit && !isReopeningReq) {
+        return;
+      }
+
+      const isSubmittedToFiscal = a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada';
+      if (isSubmittedToFiscal && !isReopeningReq) {
+        return;
+      }
+
       const isUnloadedToday = !!(a.unloadingEndTime || a.descarregamentoStatus === 'DESCARREGADO');
+      const isAuditDateRelevant = a.arrivalDate === todayStr || a.isPernoite || isUnloadedToday || (a.unloadingStartTime && a.unloadingStartTime.trim().length > 0);
 
       // Check if this map exists in imported routes
       const existsInImported = (importedRoutes || []).some(r => {
@@ -474,14 +503,13 @@ export default function EmpilhadorView({
         return (rNorm && rNorm === aMapNorm) || (rUpper && rUpper === aMapUpper) || (rPlate && rPlate === aPlateUpper);
       });
       const hasActualCountedData = (a.items && a.items.length > 0) || (a.assets && a.assets.length > 0) || (a.exchanges && a.exchanges.length > 0);
-      const isAuditDateRelevant = a.arrivalDate === todayStr || a.isPernoite || isUnloadedToday;
 
       // If this audit was from a deleted imported route and has no physical items counted, skip it
       if (!existsInImported && !hasActualCountedData && !isUnloadedToday) {
         return;
       }
 
-      if (!seenMapAndPlate.has(key) && (isReopeningReq || (isAuditActive && isAuditDateRelevant) || isUnloadedToday)) {
+      if (!seenMapAndPlate.has(key) && (isReopeningReq || isAuditDateRelevant)) {
         seenMapAndPlate.add(key);
 
         const matchingCarregamento = carregamentos.find(c => {
@@ -545,7 +573,7 @@ export default function EmpilhadorView({
           auditStatus: a.status,
           conferenteName: a.conferenteId,
           durationMinutes,
-          diasCiclo: calculateCiclo(a.arrivalDate),
+          diasCiclo: (a as any).diasCiclo || calculateCiclo(a.arrivalDate),
           isEfficiencyOnTime,
           efficiencyPercentage: isEfficiencyOnTime ? 100 : 80,
           auditRef: a,
@@ -563,37 +591,33 @@ export default function EmpilhadorView({
     const pernoiteCount = connectedVehicles.filter(v => v.isPernoite || v.descarregamentoStatus === 'PERNOITE').length;
 
     const descarregadosTotal = connectedVehicles.filter(
-      v => !v.isPernoite && v.descarregamentoStatus === 'DESCARREGADO'
+      v => v.descarregamentoStatus === 'DESCARREGADO'
     ).length;
 
     const descarregandoNow = connectedVehicles.filter(
-      v => !v.isPernoite && v.descarregamentoStatus === 'EM_DESCARGA'
+      v => v.descarregamentoStatus === 'EM_DESCARGA'
     ).length;
 
     const aguardandoCount = connectedVehicles.filter(
-      v => !v.isPernoite && v.descarregamentoStatus === 'AGUARDANDO_DESCARGA'
+      v => v.descarregamentoStatus === 'AGUARDANDO_DESCARGA' || v.descarregamentoStatus === 'PERNOITE' || v.isPernoite
     ).length;
 
-    const eligibleCount = descarregadosTotal + descarregandoNow + aguardandoCount;
+    const pendingCount = connectedVehicles.filter(v => v.descarregamentoStatus !== 'DESCARREGADO').length;
+    const eligibleCount = descarregadosTotal + pendingCount;
 
     const descarregadosOnTime = connectedVehicles.filter(
-      v => !v.isPernoite && v.descarregamentoStatus === 'DESCARREGADO' && v.isEfficiencyOnTime
+      v => v.descarregamentoStatus === 'DESCARREGADO' && v.isEfficiencyOnTime
     ).length;
 
     const descarregadosLate = connectedVehicles.filter(
-      v => !v.isPernoite && v.descarregamentoStatus === 'DESCARREGADO' && !v.isEfficiencyOnTime
+      v => v.descarregamentoStatus === 'DESCARREGADO' && !v.isEfficiencyOnTime
     ).length;
 
     const isPast22 = new Date().getHours() >= 22;
 
     let overallEfficiency = 100;
-    if (eligibleCount > 0) {
-      if (!isPast22) {
-        const lateCount = descarregadosLate;
-        overallEfficiency = Math.max(0, Math.round(((eligibleCount - lateCount) / eligibleCount) * 100));
-      } else {
-        overallEfficiency = Math.max(0, Math.round((descarregadosOnTime / eligibleCount) * 100));
-      }
+    if (descarregadosTotal > 0) {
+      overallEfficiency = Math.round((descarregadosOnTime / descarregadosTotal) * 100);
     }
 
     const totalPalletsUnloaded = connectedVehicles.reduce((acc, v) => acc + (v.loadedPallets || 0), 0);
@@ -612,29 +636,27 @@ export default function EmpilhadorView({
       isPast22,
       totalPalletsUnloaded,
       totalPalletsPlanned,
-      pendingCount: aguardandoCount + descarregandoNow
+      pendingCount
     };
   }, [connectedVehicles]);
 
-  // Filtered Connected Vehicles based on Tab and Search
+  // Filtered Connected Vehicles based on Tab and Search (Pernoites always at top)
   const filteredConnectedVehicles = useMemo(() => {
-    return connectedVehicles.filter(v => {
+    const list = connectedVehicles.filter(v => {
       // 1. Search filter
       const matchSearch = 
         !searchTerm ||
-        v.plate.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        v.routeMap.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        v.driverName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (v.empilhadorName && v.empilhadorName.toLowerCase().includes(searchTerm.toLowerCase()));
+        (v.plate || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (v.routeMap || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (v.driverName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+        ((v.empilhadorName || '').toLowerCase().includes(searchTerm.toLowerCase()));
 
-      // 2. Primary Tab Category Filter
+      // 2. Primary Tab Category Filter (Pendentes includes Pernoite)
       let matchTab = true;
       if (filterCategory === 'PENDENTES') {
-        matchTab = !v.isPernoite && (v.descarregamentoStatus === 'AGUARDANDO_DESCARGA' || v.descarregamentoStatus === 'EM_DESCARGA');
+        matchTab = v.descarregamentoStatus !== 'DESCARREGADO';
       } else if (filterCategory === 'DESCARREGADOS') {
-        matchTab = !v.isPernoite && v.descarregamentoStatus === 'DESCARREGADO';
-      } else if (filterCategory === 'PERNOITES') {
-        matchTab = v.isPernoite || v.descarregamentoStatus === 'PERNOITE';
+        matchTab = v.descarregamentoStatus === 'DESCARREGADO';
       }
 
       // 3. Secondary Filters (Empilhador, Ciclo, Date)
@@ -643,6 +665,15 @@ export default function EmpilhadorView({
       const matchDate = !filterDate || v.routeDate === filterDate;
 
       return matchSearch && matchTab && matchEmp && matchCiclo && matchDate;
+    });
+
+    // Pernoites MUST ALWAYS be placed at the top!
+    return list.sort((a, b) => {
+      const aPernoite = a.isPernoite || a.descarregamentoStatus === 'PERNOITE';
+      const bPernoite = b.isPernoite || b.descarregamentoStatus === 'PERNOITE';
+      if (aPernoite && !bPernoite) return -1;
+      if (!aPernoite && bPernoite) return 1;
+      return 0;
     });
   }, [connectedVehicles, searchTerm, filterCategory, filterEmpilhador, filterCiclo, filterDate]);
 
@@ -1013,6 +1044,149 @@ export default function EmpilhadorView({
     }
   };
 
+  // HANDLER: SELECT PERNOITE DAY (D1, D2, D3, D4+)
+  const handleSetPernoiteDay = (vehicle: ConnectedVehicle, day: 'D0' | 'D1' | 'D2' | 'D3' | 'D4+') => {
+    // 1. Update importedRoutes
+    let updatedRoutes = importedRoutes;
+    if (importedRoutes.length > 0) {
+      updatedRoutes = importedRoutes.map(r => {
+        if (
+          (r.routeMap && r.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
+          (r.plate && r.plate.toUpperCase() === vehicle.plate.toUpperCase())
+        ) {
+          return {
+            ...r,
+            isPernoite: true,
+            diasCiclo: day as any,
+            descarregamentoStatus: 'PERNOITE' as const
+          };
+        }
+        return r;
+      });
+      if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
+    }
+
+    // 2. Update audits
+    let updatedAudits = audits;
+    if (audits.length > 0) {
+      updatedAudits = audits.map(a => {
+        if (
+          (a.routeMap && a.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
+          (a.plate && a.plate.toUpperCase() === vehicle.plate.toUpperCase())
+        ) {
+          return {
+            ...a,
+            isPernoite: true,
+            diasCiclo: day as any,
+            descarregamentoStatus: 'PERNOITE' as const
+          };
+        }
+        return a;
+      });
+      if (onSaveAudits) onSaveAudits(updatedAudits);
+    }
+
+    // 3. Update carregamentos
+    const updatedCarregamentos = carregamentos.map(c => {
+      if (
+        (c.routeMap && c.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
+        (c.plate && c.plate.toUpperCase() === vehicle.plate.toUpperCase())
+      ) {
+        return {
+          ...c,
+          isPernoite: true,
+          diasCiclo: day as any
+        };
+      }
+      return c;
+    });
+    onSaveCarregamentos(updatedCarregamentos);
+
+    if (isClientFirebaseActive()) {
+      saveDirectlyToFirestore({
+        importedRoutes: updatedRoutes,
+        audits: updatedAudits,
+        carregamentoProcesses: updatedCarregamentos
+      }).catch(err => console.error('Error syncing pernoite day:', err));
+    }
+  };
+
+  // HANDLER: REOPEN UNLOADING (Move back from Descarregados to Pendentes)
+  const handleReopenUnloading = (vehicle: ConnectedVehicle) => {
+    const nextStatus = vehicle.unloadingStartTime ? 'EM_DESCARGA' : 'AGUARDANDO_DESCARGA';
+
+    // 1. Update importedRoutes
+    let updatedRoutes = importedRoutes;
+    if (importedRoutes.length > 0) {
+      updatedRoutes = importedRoutes.map(r => {
+        if (
+          (r.routeMap && r.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
+          (r.plate && r.plate.toUpperCase() === vehicle.plate.toUpperCase())
+        ) {
+          return {
+            ...r,
+            descarregamentoStatus: nextStatus as any,
+            unloadingEndTime: undefined,
+            isPernoite: false
+          };
+        }
+        return r;
+      });
+      if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
+    }
+
+    // 2. Update audits
+    let updatedAudits = audits;
+    if (audits.length > 0) {
+      updatedAudits = audits.map(a => {
+        if (
+          (a.routeMap && a.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
+          (a.plate && a.plate.toUpperCase() === vehicle.plate.toUpperCase())
+        ) {
+          return {
+            ...a,
+            descarregamentoStatus: nextStatus as any,
+            unloadingEndTime: undefined,
+            isPernoite: false
+          };
+        }
+        return a;
+      });
+      if (onSaveAudits) onSaveAudits(updatedAudits);
+    }
+
+    // 3. Update carregamentos
+    const existingProc = carregamentos.find(c => 
+      (c.routeMap && c.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
+      (c.plate && c.plate.toUpperCase() === vehicle.plate.toUpperCase())
+    );
+
+    let updatedCarregamentos = carregamentos;
+    if (existingProc) {
+      updatedCarregamentos = carregamentos.map(c => {
+        if (c.id === existingProc.id) {
+          return {
+            ...c,
+            status: 'EM_CARREGAMENTO' as const,
+            completedAt: undefined,
+            unloadingEndTime: undefined,
+            isPernoite: false
+          };
+        }
+        return c;
+      });
+      onSaveCarregamentos(updatedCarregamentos);
+    }
+
+    if (isClientFirebaseActive()) {
+      saveDirectlyToFirestore({
+        importedRoutes: updatedRoutes,
+        audits: updatedAudits,
+        carregamentoProcesses: updatedCarregamentos
+      }).catch(err => console.error('Error syncing reopened unloading:', err));
+    }
+  };
+
   // HANDLER: ADD NEW PLATE MANUALLY
   const handleAddNewPlate = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1364,47 +1538,34 @@ export default function EmpilhadorView({
 
       {/* 3. PRIMARY FILTER TABS & SEARCH BAR */}
       <div className="flex flex-col md:flex-row items-center justify-between gap-3 pt-1">
-        {/* Status Category Tabs: Symmetrical 3-column layout fitting on screen without horizontal scroll */}
-        <div className="grid grid-cols-3 gap-1.5 sm:gap-2 w-full md:w-auto">
+        {/* Status Category Tabs: 2-column layout (Pendentes inclui Pernoites) */}
+        <div className="grid grid-cols-2 gap-1.5 sm:gap-2 w-full md:w-auto">
           <button
             type="button"
             onClick={() => setFilterCategory('PENDENTES')}
-            className={`w-full py-2 px-2 sm:px-3 rounded-xl text-[11px] sm:text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center space-x-1 sm:space-x-1.5 cursor-pointer text-center ${
+            className={`w-full py-2.5 px-3 sm:px-4 rounded-xl text-[11px] sm:text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center space-x-1.5 cursor-pointer text-center ${
               filterCategory === 'PENDENTES'
                 ? 'bg-amber-500 text-slate-950 shadow-md font-black'
                 : 'bg-slate-900 hover:bg-slate-800 text-slate-400 border border-slate-800'
             }`}
           >
-            <Clock className="h-3.5 w-3.5 shrink-0" />
+            <Clock className="h-4 w-4 shrink-0" />
             <span className="truncate">PENDENTES ({descarregamentoMetrics.pendingCount})</span>
           </button>
 
           <button
             type="button"
             onClick={() => setFilterCategory('DESCARREGADOS')}
-            className={`w-full py-2 px-2 sm:px-3 rounded-xl text-[11px] sm:text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center space-x-1 sm:space-x-1.5 cursor-pointer text-center ${
+            className={`w-full py-2.5 px-3 sm:px-4 rounded-xl text-[11px] sm:text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center space-x-1.5 cursor-pointer text-center ${
               filterCategory === 'DESCARREGADOS'
                 ? 'bg-emerald-600 text-white shadow-md font-black'
                 : 'bg-slate-900 hover:bg-slate-800 text-slate-400 border border-slate-800'
             }`}
           >
-            <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+            <CheckCircle2 className="h-4 w-4 shrink-0" />
             <span className="truncate">
               <span className="hidden sm:inline">DESCARREGADOS </span>HOJE ({descarregamentoMetrics.descarregadosTotal})
             </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setFilterCategory('PERNOITES')}
-            className={`w-full py-2 px-2 sm:px-3 rounded-xl text-[11px] sm:text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center space-x-1 sm:space-x-1.5 cursor-pointer text-center ${
-              filterCategory === 'PERNOITES'
-                ? 'bg-purple-600 text-white shadow-md font-black'
-                : 'bg-slate-900 hover:bg-slate-800 text-slate-400 border border-slate-800'
-            }`}
-          >
-            <Moon className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">PERNOITES ({descarregamentoMetrics.pernoiteCount})</span>
           </button>
         </div>
 
@@ -1590,9 +1751,9 @@ export default function EmpilhadorView({
 
                       {/* Status badge */}
                       {v.isPernoite ? (
-                        <span className="bg-purple-100 text-purple-800 text-[10px] font-extrabold px-2 py-0.5 rounded-full border border-purple-200 flex items-center space-x-1">
-                          <Moon className="h-2.5 w-2.5 text-purple-600" />
-                          <span>Pernoite</span>
+                        <span className="bg-purple-600 text-white text-[10px] font-black px-2.5 py-0.5 rounded-full border border-purple-700 flex items-center space-x-1 font-mono shadow-xs">
+                          <Moon className="h-2.5 w-2.5 text-amber-300" />
+                          <span>Pernoite {v.diasCiclo || 'D1'}</span>
                         </span>
                       ) : isUnloading ? (
                         <span className="bg-blue-100 text-blue-700 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border border-blue-200 flex items-center space-x-1 animate-pulse">
@@ -1618,6 +1779,46 @@ export default function EmpilhadorView({
                         </span>
                       )}
                     </div>
+
+                    {/* Interactive Pernoite Day Selection Box */}
+                    {v.isPernoite && (
+                      <div className="bg-purple-950/10 border border-purple-200 rounded-xl p-2.5 space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-1.5 text-purple-900 font-extrabold text-xs">
+                            <Moon className="h-3.5 w-3.5 text-purple-600 shrink-0" />
+                            <span>Status Pernoite:</span>
+                            <span className="bg-purple-600 text-white text-[10px] font-black px-2 py-0.5 rounded-md font-mono">
+                              {v.diasCiclo || 'D1'}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleTogglePernoite(v)}
+                            className="text-xxs text-purple-700 hover:text-purple-900 font-bold underline cursor-pointer"
+                            title="Remover indicador de pernoite"
+                          >
+                            Remover
+                          </button>
+                        </div>
+                        <div className="flex items-center space-x-1 pt-0.5">
+                          <span className="text-[10px] text-purple-800 font-mono font-bold mr-1">Selecionar Dia:</span>
+                          {(['D1', 'D2', 'D3', 'D4+'] as const).map(day => (
+                            <button
+                              key={day}
+                              type="button"
+                              onClick={() => handleSetPernoiteDay(v, day)}
+                              className={`px-2 py-0.5 rounded text-xxs font-black font-mono transition-all cursor-pointer ${
+                                (v.diasCiclo === day || (!v.diasCiclo && day === 'D1'))
+                                  ? 'bg-purple-600 text-white shadow-xs scale-105'
+                                  : 'bg-white hover:bg-purple-100 text-purple-800 border border-purple-200'
+                              }`}
+                            >
+                              {day}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Card Body Information */}
                     <div className="space-y-1 text-xs text-slate-700">
@@ -1693,10 +1894,27 @@ export default function EmpilhadorView({
                       )}
 
                       {isUnloaded && (
-                        <div className="flex-1 bg-emerald-50 border border-emerald-200 text-emerald-800 font-extrabold text-xs py-2 px-3 rounded-xl flex items-center justify-center space-x-1.5 text-center">
-                          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-                          <span>Descarregado</span>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleReopenUnloading(v)}
+                          className="flex-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-800 border border-amber-300 font-extrabold text-xs py-2 px-3 rounded-xl transition-all flex items-center justify-center space-x-1.5 cursor-pointer shadow-xs active:scale-98"
+                          title="Reabrir descarregamento e mover este veículo de volta para a fila de Pendentes"
+                        >
+                          <RotateCcw className="h-3.5 w-3.5" />
+                          <span>Reabrir Descarregamento</span>
+                        </button>
+                      )}
+
+                      {!isUnloaded && !v.isPernoite && (
+                        <button
+                          type="button"
+                          onClick={() => handleTogglePernoite(v)}
+                          className="p-2 bg-purple-100 hover:bg-purple-200 text-purple-800 rounded-xl transition-all cursor-pointer border border-purple-200 shrink-0 flex items-center space-x-1 text-xxs font-bold"
+                          title="Marcar este veículo como Pernoite"
+                        >
+                          <Moon className="h-3.5 w-3.5 text-purple-600" />
+                          <span className="hidden sm:inline">Pernoite</span>
+                        </button>
                       )}
 
                       <button
@@ -1770,7 +1988,10 @@ export default function EmpilhadorView({
                           </td>
                           <td className="py-3 px-4">
                             {v.isPernoite ? (
-                              <span className="bg-purple-900/50 text-purple-300 border border-purple-700 text-xxs font-bold px-2 py-0.5 rounded">Pernoite</span>
+                              <span className="bg-purple-900/80 text-purple-200 border border-purple-600 text-xxs font-black px-2 py-0.5 rounded-full flex items-center space-x-1 w-fit">
+                                <Moon className="h-3 w-3 text-amber-300" />
+                                <span>Pernoite {v.diasCiclo || 'D1'}</span>
+                              </span>
                             ) : isUnloading ? (
                               <span className="bg-blue-900/50 text-blue-300 border border-blue-700 text-xxs font-bold px-2 py-0.5 rounded animate-pulse">Em Descarga</span>
                             ) : isUnloaded ? (
@@ -1780,15 +2001,41 @@ export default function EmpilhadorView({
                             )}
                           </td>
                           <td className="py-3 px-4">
-                            <button
-                              type="button"
-                              onClick={() => handleTogglePernoite(v)}
-                              className={`px-2 py-0.5 rounded text-xxs font-black transition ${
-                                v.isPernoite ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
-                              }`}
-                            >
-                              {v.isPernoite ? 'Sim' : 'Não'}
-                            </button>
+                            {v.isPernoite ? (
+                              <div className="flex items-center space-x-1">
+                                {(['D1', 'D2', 'D3', 'D4+'] as const).map(day => (
+                                  <button
+                                    key={day}
+                                    type="button"
+                                    onClick={() => handleSetPernoiteDay(v, day)}
+                                    className={`px-1.5 py-0.5 rounded text-[10px] font-black font-mono transition cursor-pointer ${
+                                      (v.diasCiclo === day || (!v.diasCiclo && day === 'D1'))
+                                        ? 'bg-purple-500 text-white shadow-xs'
+                                        : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                                    }`}
+                                    title={`Marcar pernoite como ${day}`}
+                                  >
+                                    {day}
+                                  </button>
+                                ))}
+                                <button
+                                  type="button"
+                                  onClick={() => handleTogglePernoite(v)}
+                                  className="text-red-400 hover:text-red-300 ml-1 text-xxs font-bold cursor-pointer"
+                                  title="Remover pernoite"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleTogglePernoite(v)}
+                                className="px-2 py-0.5 rounded text-xxs font-black transition bg-slate-800 text-slate-400 hover:text-white cursor-pointer"
+                              >
+                                Marcar Pernoite
+                              </button>
+                            )}
                           </td>
                           <td className="py-3 px-4 text-right">
                             <div className="flex items-center justify-end space-x-1.5">
@@ -1796,9 +2043,9 @@ export default function EmpilhadorView({
                                 <button
                                   type="button"
                                   onClick={() => handleOpenChecklist(v)}
-                                  className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xxs px-2.5 py-1.5 rounded-lg flex items-center space-x-1"
+                                  className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xxs px-2.5 py-1.5 rounded-lg flex items-center space-x-1 cursor-pointer"
                                 >
-                                  <Play className="h-3 w-3" />
+                                  <Play className="h-3 w-3 fill-slate-950" />
                                   <span>Iniciar</span>
                                 </button>
                               )}
@@ -1806,10 +2053,21 @@ export default function EmpilhadorView({
                                 <button
                                   type="button"
                                   onClick={() => handleFinishDescarregamento(v)}
-                                  className="bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xxs px-2.5 py-1.5 rounded-lg flex items-center space-x-1"
+                                  className="bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xxs px-2.5 py-1.5 rounded-lg flex items-center space-x-1 cursor-pointer"
                                 >
                                   <Check className="h-3 w-3" />
                                   <span>Finalizar</span>
+                                </button>
+                              )}
+                              {isUnloaded && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleReopenUnloading(v)}
+                                  className="bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 border border-amber-500/40 font-black text-xxs px-2.5 py-1.5 rounded-lg flex items-center space-x-1 cursor-pointer"
+                                  title="Reabrir descarregamento e mover de volta para a fila de Pendentes"
+                                >
+                                  <RotateCcw className="h-3 w-3" />
+                                  <span>Reabrir</span>
                                 </button>
                               )}
                               <button

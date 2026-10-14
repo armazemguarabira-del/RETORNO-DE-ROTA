@@ -171,9 +171,9 @@ export default function ControleSobrasView({
       // Search
       const search = searchTerm.toLowerCase().trim();
       if (search) {
-        const matchesCode = item.productCode.toLowerCase().includes(search);
-        const matchesDesc = item.productDescription.toLowerCase().includes(search);
-        const matchesMap = item.routeMap.toLowerCase().includes(search);
+        const matchesCode = (item.productCode || '').toLowerCase().includes(search);
+        const matchesDesc = (item.productDescription || '').toLowerCase().includes(search);
+        const matchesMap = (item.routeMap || '').toLowerCase().includes(search);
         const matchesClient = (item.clientCodeNB || '').toLowerCase().includes(search);
         if (!matchesCode && !matchesDesc && !matchesMap && !matchesClient) {
           return false;
