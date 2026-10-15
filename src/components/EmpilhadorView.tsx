@@ -385,9 +385,15 @@ export default function EmpilhadorView({
 
       const isPernoite = !!(r.isPernoite || matchingAudit?.isPernoite || matchingCarregamento?.isPernoite);
 
-      // REGRA CRÍTICA 3: Filtrar rotas históricas antigas sem atividade de hoje ou pernoite
-      const isRouteDateToday = !r.routeDate || r.routeDate === todayStr || (r.importedAt && r.importedAt.startsWith(todayStr));
-      const isActiveInUnloading = isPernoite || isUnloadedToday || isRouteDateToday || (r.unloadingStartTime && r.unloadingStartTime.trim().length > 0) || r.descarregamentoStatus === 'EM_DESCARGA';
+      // REGRA CRÍTICA 3: Filtrar rotas históricas de dias anteriores que não sejam pernoite
+      const isRouteDateToday = (r.routeDate === todayStr) || (r.importedAt && r.importedAt.startsWith(todayStr));
+      const isPastRoute = !!(r.routeDate && r.routeDate < todayStr);
+
+      if (isPastRoute && !isPernoite && !isReopeningReq) {
+        return;
+      }
+
+      const isActiveInUnloading = isPernoite || isUnloadedToday || isRouteDateToday || (r.unloadingStartTime && r.unloadingStartTime.trim().length > 0) || r.descarregamentoStatus === 'EM_DESCARGA' || (!r.routeDate && !r.importedAt);
 
       if (!isActiveInUnloading && !isReopeningReq) {
         return;
@@ -2272,8 +2278,8 @@ export default function EmpilhadorView({
                     onChange={(e) => setChecklistEmpilhadorId(e.target.value)}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
                   >
-                    {empilhadores.map(op => (
-                      <option key={op.id} value={op.id}>
+                    {empilhadores.map((op, idx) => (
+                      <option key={`${op.id}_${idx}`} value={op.id}>
                         {op.name} ({op.forkliftCode || 'EMP'})
                       </option>
                     ))}
@@ -2551,8 +2557,8 @@ export default function EmpilhadorView({
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white"
                   >
                     <option value="">Nenhum</option>
-                    {empilhadores.map(op => (
-                      <option key={op.id} value={op.id}>{op.name} ({op.forkliftCode})</option>
+                    {empilhadores.map((op, idx) => (
+                      <option key={`${op.id}_${idx}`} value={op.id}>{op.name} ({op.forkliftCode})</option>
                     ))}
                   </select>
                 </div>

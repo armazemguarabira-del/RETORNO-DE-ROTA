@@ -623,7 +623,14 @@ export default function App() {
     }
 
     if (db.empilhadores !== undefined && Array.isArray(db.empilhadores)) {
-      setEmpilhadores(db.empilhadores);
+      const seenIds = new Set<string>();
+      const uniqueEmp = db.empilhadores.filter(e => {
+        const identifier = e.id || e.matricula || e.name;
+        if (!identifier || seenIds.has(identifier)) return false;
+        seenIds.add(identifier);
+        return true;
+      });
+      setEmpilhadores(uniqueEmp);
     }
 
     if (db.carregamentoProcesses !== undefined && Array.isArray(db.carregamentoProcesses)) {

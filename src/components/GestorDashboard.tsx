@@ -964,15 +964,23 @@ export default function GestorDashboard({
     ? `${Math.floor(avgSeconds / 60)}m ${avgSeconds % 60}s` 
     : 'N/A';
 
-  // 1. Acuracidade Real da 1ª Conferência (First-Pass Accuracy sem recontagem)
+  // 1. Acuracidade Real da 1ª Conferência (First-Pass Accuracy sem recontagem alterada)
   const allFinishedAudits = audits.filter(a => a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || (a.status as string) === 'fechado');
   const firstPassAuditsOk = allFinishedAudits.filter(a => {
-    const hasRecount = ((a as any).recountCount && (a as any).recountCount > 0) || (a.history && a.history.some(h => (h.action || '').toLowerCase().includes('recontagem') || (h.action || '').toLowerCase().includes('reabertura')));
-    return !hasRecount && a.status === 'finalizado_ok';
+    // Regra DPO: Só despontua se a auxiliar enviou para recontagem E houver alteração na contagem física!
+    let changedPhysical = false;
+    if (a.items && a.items.length > 0) {
+      changedPhysical = a.items.some(it => it.rePhysicalQty !== undefined && it.rePhysicalQty !== it.physicalQty);
+    }
+    if (!changedPhysical && a.assets && a.assets.length > 0) {
+      changedPhysical = a.assets.some(as => as.rePhysicalQty !== undefined && as.rePhysicalQty !== as.physicalQty);
+    }
+    // Se não houve alteração física, a 1ª passagem é considerada 100% acurada (SEM ERRO)
+    return !changedPhysical;
   });
   const firstPassAccuracyPct = allFinishedAudits.length > 0
     ? (firstPassAuditsOk.length / allFinishedAudits.length) * 100
-    : 99.4;
+    : 100;
 
   // 2. Tempo Real de Conferência Física (Medição Real das Aferições)
   const timedAudits = audits.filter(a => {
@@ -1071,8 +1079,9 @@ export default function GestorDashboard({
 
     // B) Process importedRoutes that are discharged but not in carregamentos
     importedRoutes.forEach(r => {
+      const isClosed = r.status === 'fechado' || audits.some(a => (a.routeMap.toUpperCase() === r.routeMap.toUpperCase()) && (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || (a.status as string) === 'fechado'));
       const alreadyIn = list.some(item => item.routeMap === r.routeMap || (r.plate && item.plate === r.plate));
-      if (!alreadyIn && (r.descarregamentoStatus === 'DESCARREGADO' || r.unloadingEndTime)) {
+      if (!isClosed && !alreadyIn && (r.descarregamentoStatus === 'DESCARREGADO' || r.unloadingEndTime)) {
         let dur = 0;
         if (r.unloadingStartTime && r.unloadingEndTime) {
           const diff = Math.round((new Date(r.unloadingEndTime).getTime() - new Date(r.unloadingStartTime).getTime()) / 60000);
@@ -1151,7 +1160,7 @@ export default function GestorDashboard({
       allNames.add('Marivaldo Artur');
     }
 
-    const ranking = Array.from(allNames).map(name => {
+    const ranking = Array.from(allNames).map((name, idx) => {
       const records = unifiedUnloadingHistory.filter(h => (h.empilhadorName || '').toLowerCase() === (name || '').toLowerCase());
       const totalVehicles = records.length;
       const totalMins = records.reduce((s, r) => s + r.durationMinutes, 0);
@@ -1178,7 +1187,7 @@ export default function GestorDashboard({
       }
 
       return {
-        id: empObj?.id || `emp_${name}`,
+        id: empObj?.id ? `${empObj.id}_${idx}` : `emp_${name}_${idx}`,
         name,
         matricula: empObj?.matricula || 'MAT-DPO',
         shift: formattedShift,
@@ -1828,13 +1837,22 @@ export default function GestorDashboard({
       const conf = getOrCreateConf(rawId);
       conf.totalAudits += 1;
 
-      const hasRecount = ((audit as any).recountCount && (audit as any).recountCount > 0) ||
-        (audit.history && audit.history.some(h => h.action?.toLowerCase().includes('recontagem') || h.action?.toLowerCase().includes('reabertura')));
-      if (hasRecount) {
+      let changedPhysical = false;
+      if (audit.items && audit.items.length > 0) {
+        changedPhysical = audit.items.some(it => it.rePhysicalQty !== undefined && it.rePhysicalQty !== it.physicalQty);
+      }
+      if (!changedPhysical && audit.assets && audit.assets.length > 0) {
+        changedPhysical = audit.assets.some(as => as.rePhysicalQty !== undefined && as.rePhysicalQty !== as.physicalQty);
+      }
+
+      const hasRecountHistory = ((audit as any).recountCount && (audit as any).recountCount > 0) ||
+        (audit.history && audit.history.some(h => (h.action || '').toLowerCase().includes('recontagem') || (h.action || '').toLowerCase().includes('reabertura')));
+
+      if (hasRecountHistory && changedPhysical) {
         conf.recountCount += 1;
       }
 
-      if (audit.status === 'finalizado_ok' && !hasRecount) {
+      if (!changedPhysical) {
         conf.firstPassOkCount += 1;
       } else if (audit.status === 'finalizado_divergente') {
         conf.divergentCount += 1;
@@ -5307,7 +5325,7 @@ export default function GestorDashboard({
                     const isTop1 = idx === 0;
                     const rating = emp.efdPct >= 95 ? 'ALTA PERFORMANCE' : 'PADRÃO DPO';
                     return (
-                      <tr key={emp.id} className="hover:bg-slate-50/80 transition">
+                      <tr key={`${emp.id}_${idx}`} className="hover:bg-slate-50/80 transition">
                         <td className="py-3.5 px-4 text-center font-mono font-bold">
                           <span className={`inline-flex items-center justify-center px-2 py-0.5 rounded-full text-xs ${
                             isTop1
