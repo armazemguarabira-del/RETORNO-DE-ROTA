@@ -1,6 +1,10 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    match /importedRoutes/{routeId} {
+      allow read: if true;
+      allow write: if request.resource.data.platformId == "08fccceb-6c6d-437a-b4dd-5a7ec8582949";
+    }
     match /{document=**} {
       allow read, write: if true;
     }

@@ -609,6 +609,7 @@ export async function saveDocToFirestore(colName: string, item: any): Promise<bo
     const docId = getDocIdForCollection(targetCol, item);
     const cleanItem = JSON.parse(JSON.stringify(item));
     cleanItem.id = docId;
+    cleanItem.platformId = "08fccceb-6c6d-437a-b4dd-5a7ec8582949";
 
     const colCache = getColCache(targetCol);
     const newJson = canonicalJson(cleanItem);
@@ -685,7 +686,7 @@ export async function saveDocsToFirestore(colName: string, items: any[], syncDel
     }
 
     let idsToDelete: string[] = [];
-    if (syncDeletions) {
+    if (syncDeletions && targetCol !== "importedRoutes") {
       // Check deletions against known keys in colCache (0 extra read operations!)
       for (const cachedId of Array.from(colCache.keys())) {
         if (!currentDocIds.has(cachedId)) {
@@ -711,6 +712,7 @@ export async function saveDocsToFirestore(colName: string, items: any[], syncDel
       chunk.forEach(op => {
         const docRef = doc(db, targetCol, op.id);
         if (op.type === 'set') {
+          op.data.platformId = "08fccceb-6c6d-437a-b4dd-5a7ec8582949";
           batch.set(docRef, op.data, { merge: true });
         } else {
           batch.delete(docRef);

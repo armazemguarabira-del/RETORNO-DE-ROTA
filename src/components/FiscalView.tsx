@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, FiscalAlert, ImportedRoute, RouteObservation, Vale, ValeCollaborator, ReturnForecast, getAssetCode, getAssetCanonicalName } from '../types';
-import { isClientFirebaseActive, saveDirectlyToFirestore } from '../clientFirebase';
+import { isClientFirebaseActive, saveDirectlyToFirestore, fetchDirectlyFromFirestore } from '../clientFirebase';
 import { ClipboardCheck, ShieldAlert, ArrowRight, ShieldCheck, CheckSquare, AlertTriangle, HelpCircle, Search, RefreshCw, XCircle, DollarSign, Calendar, SlidersHorizontal, FileSpreadsheet, Clock, CheckCircle2, Shield, Trash2, Camera, BarChart3, AlertCircle, Plus, PlusCircle, FileText, Check, Award, Eye, Calculator, Folder, Copy, X, ArrowUpCircle, ArrowDownCircle, Sparkles, FolderOpen, Download, FileCheck, PackageCheck, UserPlus, FileJson, Archive, Moon, Info, Edit3, Users } from 'lucide-react';
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { jsPDF } from 'jspdf';
@@ -2540,7 +2540,7 @@ export default function FiscalView({
 
   const handleFileImport = (file: File, isMerge: boolean = false) => {
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       const text = e.target?.result as string;
       if (!text) return;
 
@@ -2663,7 +2663,8 @@ export default function FiscalView({
       }
 
       const nowISO = new Date().toISOString();
-      let mergedRoutes = [...importedRoutes];
+      const latestFromDb = await fetchDirectlyFromFirestore();
+      let mergedRoutes = [...(latestFromDb?.importedRoutes || importedRoutes)];
       if (isMerge) {
         // Merge mode
         parsedRoutes.forEach(newR => {
@@ -2726,7 +2727,10 @@ export default function FiscalView({
         onSaveImportedRoutes(mergedRoutes);
       }
       if (isClientFirebaseActive()) {
-        saveDirectlyToFirestore({ importedRoutes: mergedRoutes });
+        const saved = await saveDirectlyToFirestore({ importedRoutes: mergedRoutes });
+        if (!saved) {
+          throw new Error("Falha ao salvar mapas no Firestore. Por favor, verifique sua conexão.");
+        }
       }
 
       // Sync forecast driver names
