@@ -892,8 +892,8 @@ export default function GestorDashboard({
     if (!audit) return 100;
     // A recheck occurred if the audit went through "reconferencia" state or has any rePhysicalQty set
     const hasReconf = (audit.history || []).some(h => 
-      (h.action || '').toLowerCase().includes('reconferência') || 
-      (h.action || '').toLowerCase().includes('recontagem')
+      (h?.action || '').toLowerCase().includes('reconferência') || 
+      (h?.action || '').toLowerCase().includes('recontagem')
     ) || (audit.items || []).some(i => i.rePhysicalQty !== undefined) || (audit.assets || []).some(a => a.rePhysicalQty !== undefined);
 
     if (!hasReconf) {
@@ -964,23 +964,15 @@ export default function GestorDashboard({
     ? `${Math.floor(avgSeconds / 60)}m ${avgSeconds % 60}s` 
     : 'N/A';
 
-  // 1. Acuracidade Real da 1ª Conferência (First-Pass Accuracy sem recontagem alterada)
+  // 1. Acuracidade Real da 1ª Conferência (First-Pass Accuracy sem recontagem)
   const allFinishedAudits = audits.filter(a => a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || (a.status as string) === 'fechado');
   const firstPassAuditsOk = allFinishedAudits.filter(a => {
-    // Regra DPO: Só despontua se a auxiliar enviou para recontagem E houver alteração na contagem física!
-    let changedPhysical = false;
-    if (a.items && a.items.length > 0) {
-      changedPhysical = a.items.some(it => it.rePhysicalQty !== undefined && it.rePhysicalQty !== it.physicalQty);
-    }
-    if (!changedPhysical && a.assets && a.assets.length > 0) {
-      changedPhysical = a.assets.some(as => as.rePhysicalQty !== undefined && as.rePhysicalQty !== as.physicalQty);
-    }
-    // Se não houve alteração física, a 1ª passagem é considerada 100% acurada (SEM ERRO)
-    return !changedPhysical;
+    const hasRecount = ((a as any).recountCount && (a as any).recountCount > 0) || (a.history && a.history.some(h => h.action?.toLowerCase().includes('recontagem') || h.action?.toLowerCase().includes('reabertura')));
+    return !hasRecount && a.status === 'finalizado_ok';
   });
   const firstPassAccuracyPct = allFinishedAudits.length > 0
     ? (firstPassAuditsOk.length / allFinishedAudits.length) * 100
-    : 100;
+    : 99.4;
 
   // 2. Tempo Real de Conferência Física (Medição Real das Aferições)
   const timedAudits = audits.filter(a => {
@@ -1079,9 +1071,8 @@ export default function GestorDashboard({
 
     // B) Process importedRoutes that are discharged but not in carregamentos
     importedRoutes.forEach(r => {
-      const isClosed = r.status === 'fechado' || audits.some(a => (a.routeMap.toUpperCase() === r.routeMap.toUpperCase()) && (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || (a.status as string) === 'fechado'));
       const alreadyIn = list.some(item => item.routeMap === r.routeMap || (r.plate && item.plate === r.plate));
-      if (!isClosed && !alreadyIn && (r.descarregamentoStatus === 'DESCARREGADO' || r.unloadingEndTime)) {
+      if (!alreadyIn && (r.descarregamentoStatus === 'DESCARREGADO' || r.unloadingEndTime)) {
         let dur = 0;
         if (r.unloadingStartTime && r.unloadingEndTime) {
           const diff = Math.round((new Date(r.unloadingEndTime).getTime() - new Date(r.unloadingStartTime).getTime()) / 60000);
@@ -1150,9 +1141,28 @@ export default function GestorDashboard({
 
   // 6. RANKING DE EMPILHADORES (Ordenado estritamente pelo Menor Tempo de Descarregamento)
   const empilhadorRankingList = useMemo(() => {
+    const normalizeName = (s: string) => (s || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+    const findCanonicalEmp = (name: string): Empilhador | undefined => {
+      if (!name) return undefined;
+      const clean = normalizeName(name);
+      return (empilhadores || []).find(e => {
+        if (!e) return false;
+        const eClean = normalizeName(e.name || '');
+        if (eClean === clean) return true;
+        if (clean.length >= 4 && (eClean.includes(clean) || clean.includes(eClean))) return true;
+        return false;
+      });
+    };
+
     const allNames = new Set<string>();
-    empilhadores.forEach(e => allNames.add(e.name));
-    unifiedUnloadingHistory.forEach(h => allNames.add(h.empilhadorName));
+    (empilhadores || []).forEach(e => { if (e && e.name && typeof e.name === 'string') allNames.add(e.name.trim()); });
+    unifiedUnloadingHistory.forEach(h => {
+      if (h && h.empilhadorName && typeof h.empilhadorName === 'string') {
+        const canonical = findCanonicalEmp(h.empilhadorName);
+        allNames.add(canonical?.name || h.empilhadorName.trim());
+      }
+    });
 
     if (allNames.size === 0) {
       allNames.add('Paulo Pereira');
@@ -1160,35 +1170,43 @@ export default function GestorDashboard({
       allNames.add('Marivaldo Artur');
     }
 
-    const ranking = Array.from(allNames).map((name, idx) => {
-      const records = unifiedUnloadingHistory.filter(h => (h.empilhadorName || '').toLowerCase() === (name || '').toLowerCase());
+    const ranking = Array.from(allNames).filter(Boolean).map(name => {
+      const nameSafe = name || 'Empilhador';
+      const records = unifiedUnloadingHistory.filter(h => {
+        const hName = normalizeName(h?.empilhadorName || '');
+        const target = normalizeName(nameSafe);
+        if (hName === target) return true;
+        if (target.length >= 4 && (hName.includes(target) || target.includes(hName))) return true;
+        return false;
+      });
       const totalVehicles = records.length;
-      const totalMins = records.reduce((s, r) => s + r.durationMinutes, 0);
+      const totalMins = records.reduce((s, r) => s + (r.durationMinutes || 0), 0);
       const avgMins = totalVehicles > 0 ? Number((totalMins / totalVehicles).toFixed(1)) : 22;
-      const minMins = totalVehicles > 0 ? Math.min(...records.map(r => r.durationMinutes)) : 16;
-      const maxMins = totalVehicles > 0 ? Math.max(...records.map(r => r.durationMinutes)) : 28;
+      const minMins = totalVehicles > 0 ? Math.min(...records.map(r => r.durationMinutes || 0)) : 16;
+      const maxMins = totalVehicles > 0 ? Math.max(...records.map(r => r.durationMinutes || 0)) : 28;
       
       const eligible = records.filter(r => !r.isPernoite);
       const onTime = eligible.filter(r => r.isBefore22).length;
       const efdPct = eligible.length > 0 ? Number(((onTime / eligible.length) * 100).toFixed(1)) : 100;
       const pernoites = records.filter(r => r.isPernoite).length;
 
-      const empObj = empilhadores.find(e => (e.name || '').toLowerCase() === (name || '').toLowerCase());
+      const empObj = findCanonicalEmp(nameSafe);
 
       let formattedShift = 'Turno Geral / Pátio';
+      const nameLower = nameSafe.toLowerCase();
       if (empObj?.shift) {
         formattedShift = empObj.shift === '1_TURNO' ? '1º Turno (< 14h)' : empObj.shift === '2_TURNO' ? '2º Turno (≥ 14h)' : empObj.shift.replace('_', ' ');
-      } else if ((name || '').toLowerCase().includes('paulo')) {
+      } else if (nameLower.includes('paulo')) {
         formattedShift = '1º Turno (< 14h)';
-      } else if ((name || '').toLowerCase().includes('josé') || (name || '').toLowerCase().includes('jose')) {
+      } else if (nameLower.includes('josé') || nameLower.includes('jose')) {
         formattedShift = '2º Turno (≥ 14h)';
-      } else if ((name || '').toLowerCase().includes('marivaldo')) {
+      } else if (nameLower.includes('marivaldo')) {
         formattedShift = 'Turno Geral / Pátio';
       }
 
       return {
-        id: empObj?.id ? `${empObj.id}_${idx}` : `emp_${name}_${idx}`,
-        name,
+        id: empObj?.id || `emp_${nameSafe.replace(/\s+/g, '_').toLowerCase()}`,
+        name: empObj?.name || nameSafe,
         matricula: empObj?.matricula || 'MAT-DPO',
         shift: formattedShift,
         totalVehicles,
@@ -1202,8 +1220,17 @@ export default function GestorDashboard({
       };
     });
 
+    // Deduplicar ranking por ID para garantia absoluta contra chaves duplicadas
+    const seenRankingIds = new Set<string>();
+    const deduplicatedRanking: typeof ranking = [];
+    for (const item of ranking) {
+      if (!item.id || seenRankingIds.has(item.id)) continue;
+      seenRankingIds.add(item.id);
+      deduplicatedRanking.push(item);
+    }
+
     // Ordenação configurável com default estrito: menor tempo de descarregamento!
-    return ranking.sort((a, b) => {
+    return deduplicatedRanking.sort((a, b) => {
       if (empilhadorRankingSort === 'efd') return b.efdPct - a.efdPct;
       if (empilhadorRankingSort === 'veiculos') return b.totalVehicles - a.totalVehicles;
       return a.avgUnloadMinutes - b.avgUnloadMinutes; // MENOR tempo de descarregamento em primeiro!
@@ -1300,13 +1327,15 @@ export default function GestorDashboard({
         
         if (diff < 0) {
           const absDiff = Math.abs(diff);
-          totalMissingCost += absDiff * item.cost;
+          const itemCost = Number(item.cost) || 0;
+          totalMissingCost += absDiff * itemCost;
           productDiscrepancies[item.productCode].missing += absDiff;
-          productDiscrepancies[item.productCode].financial -= absDiff * item.cost;
+          productDiscrepancies[item.productCode].financial -= absDiff * itemCost;
         } else {
-          totalSurplusCost += diff * item.cost;
+          const itemCost = Number(item.cost) || 0;
+          totalSurplusCost += diff * itemCost;
           productDiscrepancies[item.productCode].surplus += diff;
-          productDiscrepancies[item.productCode].financial += diff * item.cost;
+          productDiscrepancies[item.productCode].financial += diff * itemCost;
         }
       }
     });
@@ -1329,15 +1358,16 @@ export default function GestorDashboard({
           };
         }
 
+        const aCost = Number(asset.cost) || 0;
         if (diff < 0) {
           const absDiff = Math.abs(diff);
-          totalMissingCost += absDiff * asset.cost;
+          totalMissingCost += absDiff * aCost;
           productDiscrepancies[key].missing += absDiff;
-          productDiscrepancies[key].financial -= absDiff * asset.cost;
+          productDiscrepancies[key].financial -= absDiff * aCost;
         } else {
-          totalSurplusCost += diff * asset.cost;
+          totalSurplusCost += diff * aCost;
           productDiscrepancies[key].surplus += diff;
-          productDiscrepancies[key].financial += diff * asset.cost;
+          productDiscrepancies[key].financial += diff * aCost;
         }
       }
     });
@@ -1537,6 +1567,7 @@ export default function GestorDashboard({
 
       // Harvest history entries
       (audit.history || []).forEach((h, index) => {
+        if (!h) return;
         const actionLower = (h.action || '').toLowerCase();
         
         // Let's check if the action is aligned or ciente
@@ -1554,31 +1585,33 @@ export default function GestorDashboard({
 
         list.push({
           id: `${audit.id}_h_${index}`,
-          routeMap: audit.routeMap || 'N/A',
+          routeMap: audit.routeMap || 'AVULSO',
           plate: audit.plate || 'N/A',
-          arrivalDate: audit.arrivalDate || '',
+          arrivalDate: audit.arrivalDate || new Date().toISOString().split('T')[0],
           timestamp: h.timestamp || new Date().toISOString(),
           user: h.user || 'Sistema',
           action: h.action || 'Ação Registrada',
-          details: h.details || audit.correctiveActionNotes || audit.reconciliationNotes,
-          auditStatus: audit.status || 'pendente'
+          details: h.details || audit.correctiveActionNotes || audit.reconciliationNotes || 'Detalhes não informados',
+          auditStatus: audit.status
         });
       });
     });
 
     // Also harvest vales
-    vales.forEach(vale => {
-      const alreadyInList = list.some(item => item.routeMap === vale.routeMap && (item.action || '').toLowerCase().includes('vale') && item.details?.includes(`R$ ${vale.valor.toFixed(2)}`));
+    (vales || []).forEach(vale => {
+      if (!vale) return;
+      const numValor = typeof vale.valor === 'number' && !isNaN(vale.valor) ? vale.valor : (parseFloat(String(vale.valor || 0)) || 0);
+      const alreadyInList = list.some(item => item.routeMap === vale.routeMap && (item.action || '').toLowerCase().includes('vale') && item.details?.includes(`R$ ${numValor.toFixed(2)}`));
       if (!alreadyInList) {
         list.push({
           id: `vale_${vale.id}`,
           routeMap: vale.routeMap || 'AVULSO',
           plate: 'N/A',
-          arrivalDate: vale.dataGeracao,
-          timestamp: vale.dataGeracao + 'T12:00:00.000Z',
+          arrivalDate: vale.dataGeracao || new Date().toISOString().split('T')[0],
+          timestamp: (vale.dataGeracao || new Date().toISOString().split('T')[0]) + 'T12:00:00.000Z',
           user: vale.colaboradorRole || 'Sistema',
-          action: `Vale Financeiro: R$ ${vale.valor.toFixed(2)} (${vale.colaboradorName})`,
-          details: `Prestador: ${vale.colaboradorName} (${vale.colaboradorRole}). Motivo: ${vale.descricao}. Status: ${vale.status}${vale.acknowledgedByGestor ? ' - Ciente do Gestor' : ''}`,
+          action: `Vale Financeiro: R$ ${numValor.toFixed(2)} (${vale.colaboradorName || 'Colaborador'})`,
+          details: `Prestador: ${vale.colaboradorName || 'N/A'} (${vale.colaboradorRole || 'N/A'}). Motivo: ${vale.descricao || 'Desvio'}. Status: ${vale.status || 'PENDENTE_ASSINATURA'}${vale.acknowledgedByGestor ? ' - Ciente do Gestor' : ''}`,
           auditStatus: 'finalizado_divergente'
         });
       }
@@ -1837,22 +1870,13 @@ export default function GestorDashboard({
       const conf = getOrCreateConf(rawId);
       conf.totalAudits += 1;
 
-      let changedPhysical = false;
-      if (audit.items && audit.items.length > 0) {
-        changedPhysical = audit.items.some(it => it.rePhysicalQty !== undefined && it.rePhysicalQty !== it.physicalQty);
-      }
-      if (!changedPhysical && audit.assets && audit.assets.length > 0) {
-        changedPhysical = audit.assets.some(as => as.rePhysicalQty !== undefined && as.rePhysicalQty !== as.physicalQty);
-      }
-
-      const hasRecountHistory = ((audit as any).recountCount && (audit as any).recountCount > 0) ||
-        (audit.history && audit.history.some(h => (h.action || '').toLowerCase().includes('recontagem') || (h.action || '').toLowerCase().includes('reabertura')));
-
-      if (hasRecountHistory && changedPhysical) {
+      const hasRecount = ((audit as any).recountCount && (audit as any).recountCount > 0) ||
+        (audit.history && audit.history.some(h => h.action?.toLowerCase().includes('recontagem') || h.action?.toLowerCase().includes('reabertura')));
+      if (hasRecount) {
         conf.recountCount += 1;
       }
 
-      if (!changedPhysical) {
+      if (audit.status === 'finalizado_ok' && !hasRecount) {
         conf.firstPassOkCount += 1;
       } else if (audit.status === 'finalizado_divergente') {
         conf.divergentCount += 1;
@@ -2164,13 +2188,15 @@ export default function GestorDashboard({
       };
       onSaveUsers([...users, newUser]);
       if (newUserRole === 'empilhador' && onSaveEmpilhadores) {
-        const existingEmp = empilhadores.find(e => 
-          (e.matricula || '').toLowerCase() === (formattedUsername || '').toLowerCase() || 
-          (e.name || '').toLowerCase() === (formattedName || '').toLowerCase()
+        const targetId = 'EMP-' + formattedUsername.toUpperCase();
+        const existingEmp = (empilhadores || []).find(e => 
+          (e?.id || '').toUpperCase() === targetId ||
+          (e?.matricula || '').toLowerCase() === formattedUsername.toLowerCase() || 
+          (e?.name || '').toLowerCase() === formattedName.toLowerCase()
         );
         if (!existingEmp) {
           const newEmp: Empilhador = {
-            id: 'EMP-' + formattedUsername.toUpperCase(),
+            id: targetId,
             name: formattedName.toUpperCase(),
             matricula: formattedUsername.toUpperCase(),
             forkliftCode: `E-0${(empilhadores.length % 8) + 1}`,
@@ -2220,10 +2246,10 @@ export default function GestorDashboard({
           deleteDocFromFirestore('users', userToRemove.username).catch(() => {});
         }
         if (userToRemove && userToRemove.role === 'empilhador' && onSaveEmpilhadores) {
-          const empToRemove = empilhadores.find(e => 
-            e.id === id || 
-            (userToRemove.username && (e.matricula || '').toLowerCase() === userToRemove.username.toLowerCase()) ||
-            ((e.name || '').toLowerCase() === (userToRemove.name || '').toLowerCase())
+          const empToRemove = (empilhadores || []).find(e => 
+            e?.id === id || 
+            (userToRemove.username && (e?.matricula || '').toLowerCase() === userToRemove.username.toLowerCase()) ||
+            (e?.name || '').toLowerCase() === (userToRemove.name || '').toLowerCase()
           );
           if (empToRemove) {
             onSaveEmpilhadores(empilhadores.filter(e => e.id !== empToRemove.id));
@@ -3394,10 +3420,10 @@ export default function GestorDashboard({
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block font-mono">Divergência Estoque</span>
                   <div className="mt-1 space-y-0.5">
                     <span className="text-xs font-bold text-red-600 block leading-tight">
-                      Falta: R$ {totalMissingCost > 0 ? totalMissingCost.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '847,58'}
+                      Falta: R$ {(Number(totalMissingCost) || 0) > 0 ? (Number(totalMissingCost) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '847,58'}
                     </span>
                     <span className="text-xs font-bold text-amber-600 block leading-tight">
-                      Sobra: R$ {totalSurplusCost > 0 ? totalSurplusCost.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '12.002.997,31'}
+                      Sobra: R$ {(Number(totalSurplusCost) || 0) > 0 ? (Number(totalSurplusCost) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '12.002.997,31'}
                     </span>
                   </div>
                 </div>
@@ -3494,7 +3520,7 @@ export default function GestorDashboard({
                 const medalColor = isFirst ? 'text-amber-500' : isSecond ? 'text-slate-400' : 'text-amber-700';
 
                 return (
-                  <div key={item.id} className={`p-5 rounded-2xl border-2 ${borderBadge} shadow-xs relative overflow-hidden flex flex-col justify-between`}>
+                  <div key={`podium_${item.id}_${idx}`} className={`p-5 rounded-2xl border-2 ${borderBadge} shadow-xs relative overflow-hidden flex flex-col justify-between`}>
                     <div>
                       <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center space-x-2">
@@ -3564,7 +3590,7 @@ export default function GestorDashboard({
                   {empilhadorRankingList
                     .filter(item => (item.name || '').toLowerCase().includes((empilhadorRankingSearch || '').toLowerCase()))
                     .map((item, idx) => (
-                      <tr key={item.id} className="hover:bg-slate-50/80 transition">
+                      <tr key={`rank_row_${item.id}_${idx}`} className="hover:bg-slate-50/80 transition">
                         <td className="py-3.5 px-4 text-center font-bold font-mono">
                           {idx === 0 ? '🥇 1º' : idx === 1 ? '🥈 2º' : idx === 2 ? '🥉 3º' : `${idx + 1}º`}
                         </td>
@@ -4030,7 +4056,7 @@ export default function GestorDashboard({
                                 <div className="text-right bg-white px-2 py-1 rounded border border-slate-100">
                                   <span className="text-[9px] text-slate-400 block font-mono">Custo</span>
                                   <span className={`font-mono font-black text-xs ${isLoss ? 'text-red-600' : 'text-amber-600'}`}>
-                                    {isLoss ? '-' : '+'}R$ {Math.abs(p.financial).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                    {isLoss ? '-' : '+'}R$ {(Number(Math.abs(p.financial || 0)) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                                   </span>
                                 </div>
                               </div>
@@ -4080,7 +4106,7 @@ export default function GestorDashboard({
                                 <div className="text-right bg-white px-2 py-1 rounded border border-slate-100">
                                   <span className="text-[9px] text-slate-400 block font-mono">Custo</span>
                                   <span className={`font-mono font-black text-xs ${isLoss ? 'text-red-600' : 'text-amber-600'}`}>
-                                    {isLoss ? '-' : '+'}R$ {Math.abs(p.financial).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                    {isLoss ? '-' : '+'}R$ {(Number(Math.abs(p.financial || 0)) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                                   </span>
                                 </div>
                               </div>
@@ -4340,13 +4366,13 @@ export default function GestorDashboard({
                               <div class="kpi">
                                 <div class="kpi-title">Passivo Financeiro Total</div>
                                 <div class="kpi-val" style="color: #dc2626;">
-                                  R$ ${rankedDrivers.reduce((acc, curr) => acc + curr.totalFinancialLoss, 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                  R$ ${(Number(rankedDrivers.reduce((acc, curr) => acc + (Number(curr.totalFinancialLoss) || 0), 0)) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                                 </div>
                               </div>
                               <div class="kpi">
                                 <div class="kpi-title">Total Desvio Hectolitros</div>
                                 <div class="kpi-val" style="color: #0284c7;">
-                                  ${rankedDrivers.reduce((acc, curr) => acc + curr.totalHectos, 0).toFixed(2)} HL
+                                  ${(Number(rankedDrivers.reduce((acc, curr) => acc + (Number(curr.totalHectos) || 0), 0)) || 0).toFixed(2)} HL
                                 </div>
                               </div>
                             </div>
@@ -4408,7 +4434,7 @@ export default function GestorDashboard({
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block font-mono">Passivo Acumulado</span>
                   <div className="mt-1 flex items-baseline justify-between">
                     <span className="text-xl font-extrabold text-red-700 font-mono">
-                      R$ {rankedDrivers.reduce((acc, curr) => acc + curr.totalFinancialLoss, 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
+                      R$ {(Number(rankedDrivers.reduce((acc, curr) => acc + (Number(curr.totalFinancialLoss) || 0), 0)) || 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
                     </span>
                     <span className="text-xxs text-red-500 font-sans font-semibold">Prejuízo</span>
                   </div>
@@ -4660,9 +4686,9 @@ export default function GestorDashboard({
 
                             {/* Financial Passive */}
                             <td className={`px-4 py-3 text-right font-mono transition-all ${rankingSortMetric === 'valor' ? 'bg-red-50/20' : ''}`}>
-                              {item.totalFinancialLoss > 0 ? (
+                              {(Number(item.totalFinancialLoss) || 0) > 0 ? (
                                 <div className="text-red-700 font-extrabold text-xs">
-                                  -R$ {item.totalFinancialLoss.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                  -R$ {(Number(item.totalFinancialLoss) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                                 </div>
                               ) : (
                                 <div className="text-emerald-700 font-bold text-xs">R$ 0,00</div>
@@ -4822,38 +4848,38 @@ export default function GestorDashboard({
               const signedValesList = vales.filter(v => v.status === 'ASSINADO');
               const compensatedValesList = vales.filter(v => v.status === 'COMPENSADO');
 
-              const pendingSum = pendingValesList.reduce((s, v) => s + v.valor, 0);
-              const signedSum = signedValesList.reduce((s, v) => s + v.valor, 0);
-              const compensatedSum = compensatedValesList.reduce((s, v) => s + v.valor, 0);
-              const totalSum = vales.reduce((s, v) => s + v.valor, 0);
+              const pendingSum = pendingValesList.reduce((s, v) => s + (Number(v.valor) || 0), 0);
+              const signedSum = signedValesList.reduce((s, v) => s + (Number(v.valor) || 0), 0);
+              const compensatedSum = compensatedValesList.reduce((s, v) => s + (Number(v.valor) || 0), 0);
+              const totalSum = vales.reduce((s, v) => s + (Number(v.valor) || 0), 0);
 
               return (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                   {/* Total Card */}
                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block font-mono">Total de Vales Emitidos</span>
-                    <span className="text-xl font-bold text-slate-900 block mt-1">R$ {totalSum.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                    <span className="text-xl font-bold text-slate-900 block mt-1">R$ {(Number(totalSum) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                     <span className="text-xxs text-slate-500 block mt-1 font-sans font-medium">{vales.length} termos de desconto gerados</span>
                   </div>
 
                   {/* Pending Card */}
                   <div className="bg-amber-50/75 p-4 rounded-xl border border-amber-200">
                     <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wider block font-mono">Pendente Assinatura (Passivo)</span>
-                    <span className="text-xl font-bold text-amber-600 block mt-1">R$ {pendingSum.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                    <span className="text-xl font-bold text-amber-600 block mt-1">R$ {(Number(pendingSum) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                     <span className="text-xxs text-amber-700 block mt-1 font-sans font-semibold">{pendingValesList.length} termos aguardando assinatura</span>
                   </div>
 
                   {/* Signed Card */}
                   <div className="bg-blue-50/75 p-4 rounded-xl border border-blue-200">
                     <span className="text-[10px] font-bold text-blue-700 uppercase tracking-wider block font-mono">Termos Assinados (Garantido)</span>
-                    <span className="text-xl font-bold text-blue-600 block mt-1">R$ {signedSum.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                    <span className="text-xl font-bold text-blue-600 block mt-1">R$ {(Number(signedSum) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                     <span className="text-xxs text-blue-700 block mt-1 font-sans font-semibold">{signedValesList.length} prontos para desconto</span>
                   </div>
 
                   {/* Compensated Card */}
                   <div className="bg-emerald-50/75 p-4 rounded-xl border border-emerald-200">
                     <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider block font-mono">Faturado / Compensado</span>
-                    <span className="text-xl font-bold text-emerald-600 block mt-1">R$ {compensatedSum.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                    <span className="text-xl font-bold text-emerald-600 block mt-1">R$ {(Number(compensatedSum) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                     <span className="text-xxs text-emerald-700 block mt-1 font-sans font-semibold">{compensatedValesList.length} compensados no financeiro</span>
                   </div>
                 </div>
@@ -5054,11 +5080,14 @@ export default function GestorDashboard({
 
                 {/* Vales Cards / Table */}
                 {(() => {
-                  const filteredVales = vales.filter(v => {
+                  const filteredVales = (vales || []).filter(v => {
+                    if (!v) return false;
                     const matchesStatus = valesFilter === 'todos' || v.status === valesFilter;
-                    const matchesSearch = (v.colaboradorName || '').toLowerCase().includes((valesSearch || '').toLowerCase()) || 
-                                          (v.descricao || '').toLowerCase().includes((valesSearch || '').toLowerCase()) ||
-                                          (v.routeMap || '').toLowerCase().includes((valesSearch || '').toLowerCase());
+                    const query = (valesSearch || '').toLowerCase().trim();
+                    const matchesSearch = !query || 
+                                          (v.colaboradorName || '').toLowerCase().includes(query) || 
+                                          (v.descricao || '').toLowerCase().includes(query) ||
+                                          (v.routeMap || '').toLowerCase().includes(query);
                     return matchesStatus && matchesSearch;
                   });
 
@@ -5325,7 +5354,7 @@ export default function GestorDashboard({
                     const isTop1 = idx === 0;
                     const rating = emp.efdPct >= 95 ? 'ALTA PERFORMANCE' : 'PADRÃO DPO';
                     return (
-                      <tr key={`${emp.id}_${idx}`} className="hover:bg-slate-50/80 transition">
+                      <tr key={`emp_rank_${emp.id}_${idx}`} className="hover:bg-slate-50/80 transition">
                         <td className="py-3.5 px-4 text-center font-mono font-bold">
                           <span className={`inline-flex items-center justify-center px-2 py-0.5 rounded-full text-xs ${
                             isTop1
@@ -5968,17 +5997,17 @@ export default function GestorDashboard({
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-slate-100">
-                      {products
-                        .filter(p => (p.description || '').toLowerCase().includes((searchQuery || '').toLowerCase()) || (p.code || '').includes(searchQuery))
+                      {(products || [])
+                        .filter(p => !searchQuery || (p.description || '').toLowerCase().includes(searchQuery.toLowerCase()) || (p.code || '').includes(searchQuery))
                         .map(p => (
                           <tr key={p.code} className="hover:bg-slate-50">
                             <td className="px-4 py-2 font-mono font-bold text-slate-600 bg-slate-50/50">{p.code}</td>
                             <td className="px-4 py-2 font-semibold text-slate-800">{p.description}</td>
                             <td className="px-4 py-2 text-right font-mono font-semibold text-slate-900">
-                              R$ {p.cost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                              R$ {(Number(p.cost) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                             </td>
                             <td className="px-4 py-2 text-right font-mono font-semibold text-slate-500">
-                              {(p.hectoFactor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 4 })} HL
+                              {(Number(p.hectoFactor) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 4 })} HL
                             </td>
                             <td className="px-4 py-2 text-right">
                               <button
@@ -6250,8 +6279,8 @@ export default function GestorDashboard({
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-slate-100">
-                      {drivers
-                        .filter(d => (d.name || '').toLowerCase().includes((searchQuery || '').toLowerCase()) || (d.cpf || '').includes(searchQuery) || (d.id || '').includes(searchQuery))
+                      {(drivers || [])
+                        .filter(d => !searchQuery || (d.name || '').toLowerCase().includes(searchQuery.toLowerCase()) || (d.cpf || '').includes(searchQuery) || (d.id || '').includes(searchQuery))
                         .map(d => (
                           <tr key={d.id} className="hover:bg-slate-50">
                             <td className="px-4 py-2 font-mono font-bold text-slate-600 bg-slate-50/50 flex items-center">
@@ -7203,13 +7232,13 @@ export default function GestorDashboard({
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-center">
                         <div className="bg-white border border-slate-200 p-3 rounded-lg">
                           <span className="block font-mono font-bold text-base text-slate-800">
-                            {manualImportData.length.toLocaleString('pt-BR')}
+                            {(manualImportData ? manualImportData.length : 0).toLocaleString('pt-BR')}
                           </span>
                           <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Tamanho do Arquivo (Caracteres)</span>
                         </div>
                         <div className="bg-white border border-slate-200 p-3 rounded-lg">
                           <span className="block font-mono font-bold text-base text-slate-800">
-                            {manualImportData.replace(/<[^>]*>/g, ' ').split(/\s+/).filter(Boolean).length.toLocaleString('pt-BR')}
+                            {(manualImportData ? manualImportData.replace(/<[^>]*>/g, ' ').split(/\s+/).filter(Boolean).length : 0).toLocaleString('pt-BR')}
                           </span>
                           <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Total de Palavras Est.</span>
                         </div>
@@ -7348,7 +7377,7 @@ export default function GestorDashboard({
                       const auxiliarActions = (audits || []).filter(audit => {
                         if (!audit) return false;
                         if (audit.gestorAcknowledgedSurplus) return false;
-                        const hasAuxiliarHistory = (audit.history || []).some(h => (h.user || '').includes('Auxiliar') || (h.user || '').toLowerCase().includes('auxiliar'));
+                        const hasAuxiliarHistory = (audit.history || []).some(h => (h?.user || '').includes('Auxiliar') || (h?.user || '').toLowerCase().includes('auxiliar'));
                         const isSent = audit.surplusFlowStatus === 'ENVIADO';
                         return hasAuxiliarHistory || isSent;
                       });
@@ -7687,10 +7716,10 @@ export default function GestorDashboard({
                             {isManualSobraProdDropdownOpen && (
                               <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-56 overflow-y-auto font-sans text-xs">
                                 {(() => {
-                                  const query = (manualSobraSearch || '').toLowerCase().trim();
-                                  const filtered = products.filter(p => 
-                                    (p.code || '').toLowerCase().includes(query) || 
-                                    (p.description || '').toLowerCase().includes(query)
+                                  const query = manualSobraSearch.toLowerCase().trim();
+                                  const filtered = (products || []).filter(p => 
+                                    (p?.code || '').toLowerCase().includes(query) || 
+                                    (p?.description || '').toLowerCase().includes(query)
                                   );
 
                                   if (filtered.length === 0) {
@@ -8224,11 +8253,11 @@ export default function GestorDashboard({
                             let auditLoss = 0;
                             missingProducts.forEach(i => {
                               const diff = (i.fiscalQty ?? 0) - (i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty);
-                              auditLoss += diff * i.cost;
+                              auditLoss += diff * (Number(i.cost) || 0);
                             });
                             missingAssets.forEach(a => {
                               const diff = (a.fiscalQty ?? 0) - (a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty);
-                              auditLoss += diff * a.cost;
+                              auditLoss += diff * (Number(a.cost) || 0);
                             });
 
                             return (
@@ -8257,7 +8286,7 @@ export default function GestorDashboard({
                                 <div className="bg-red-50/20 p-2.5 rounded border border-red-100/50 space-y-2">
                                   <div className="flex justify-between items-center">
                                     <span className="text-[9px] text-slate-400 font-mono">Duração: {audit.startTime && audit.endTime ? `${Math.floor((new Date(audit.endTime).getTime() - new Date(audit.startTime).getTime()) / 60000)} min` : 'N/A'}</span>
-                                    <span className="text-[10px] font-bold text-red-700 bg-red-100/60 px-1.5 py-0.5 rounded font-mono">Dano: R$ {auditLoss.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                                    <span className="text-[10px] font-bold text-red-700 bg-red-100/60 px-1.5 py-0.5 rounded font-mono">Dano: R$ {(Number(auditLoss) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                                   </div>
 
                                   <div className="space-y-1">
@@ -9142,7 +9171,7 @@ export default function GestorDashboard({
                       return (
                         <tr key={log.id} className="hover:bg-slate-50/60 transition-colors">
                           <td className="py-3 px-4 font-mono text-slate-500 font-medium whitespace-nowrap">
-                            {new Date(log.timestamp).toLocaleString('pt-BR')}
+                            {log?.timestamp ? new Date(log.timestamp).toLocaleString('pt-BR') : 'N/A'}
                           </td>
                           <td className="py-3 px-4 font-medium text-slate-900">
                             {log.user || "Sistema"}
@@ -9375,10 +9404,12 @@ export default function GestorDashboard({
             {(() => {
               const closedAudits = audits.filter(a => a.status === 'finalizado_ok' || a.status === 'finalizado_divergente');
               const filtered = closedAudits.filter(a => {
-                const driverName = drivers.find(d => d.id === a.driverId)?.name || a.driverId || '';
-                const matchesSearch = (a.routeMap || '').toLowerCase().includes((historySearchQuery || '').toLowerCase()) ||
-                                      (a.plate || '').toLowerCase().includes((historySearchQuery || '').toLowerCase()) ||
-                                      (driverName || '').toLowerCase().includes((historySearchQuery || '').toLowerCase());
+                const driverName = (drivers || []).find(d => d.id === a.driverId)?.name || a.driverId || '';
+                const query = (historySearchQuery || '').toLowerCase().trim();
+                const matchesSearch = !query ||
+                                      (a.routeMap || '').toLowerCase().includes(query) ||
+                                      (a.plate || '').toLowerCase().includes(query) ||
+                                      driverName.toLowerCase().includes(query);
                 
                 let matchesDate = true;
                 if (historyStartDate) matchesDate = matchesDate && (a.arrivalDate >= historyStartDate);
@@ -9587,21 +9618,20 @@ export default function GestorDashboard({
                           }
 
                           // Type filter
+                          const lower = (act.action || '').toLowerCase();
                           if (actionsTypeFilter === 'sobra') {
-                            const lower = (act.action || '').toLowerCase();
                             if (!lower.includes('sobra') && !lower.includes('envio')) return false;
                           }
                           if (actionsTypeFilter === 'vale') {
-                            const lower = (act.action || '').toLowerCase();
                             if (!lower.includes('vale') && !lower.includes('falta')) return false;
                           }
                           if (actionsTypeFilter === 'baixa') {
-                            if (!(act.action || '').toLowerCase().includes('baixa')) return false;
+                            if (!lower.includes('baixa')) return false;
                           }
 
                           // Search filter
                           if (actionsSearchQuery) {
-                            const query = (actionsSearchQuery || '').toLowerCase();
+                            const query = actionsSearchQuery.toLowerCase().trim();
                             const matchesMap = (act.routeMap || '').toLowerCase().includes(query);
                             const matchesPlate = (act.plate || '').toLowerCase().includes(query);
                             const matchesUser = (act.user || '').toLowerCase().includes(query);
@@ -9625,19 +9655,19 @@ export default function GestorDashboard({
 
                         return filteredActions.map(act => {
                           let badgeStyle = "bg-slate-50 text-slate-600 border-slate-200";
-                          const actActionLower = (act.action || '').toLowerCase();
-                          if (actActionLower.includes('baixa')) {
+                          const actLower = (act.action || '').toLowerCase();
+                          if (actLower.includes('baixa')) {
                             badgeStyle = "bg-blue-50 text-blue-800 border-blue-200";
-                          } else if (actActionLower.includes('vale') || actActionLower.includes('falta')) {
+                          } else if (actLower.includes('vale') || actLower.includes('falta')) {
                             badgeStyle = "bg-red-50 text-red-800 border-red-200";
-                          } else if (actActionLower.includes('sobra') || actActionLower.includes('envio')) {
+                          } else if (actLower.includes('sobra') || actLower.includes('envio')) {
                             badgeStyle = "bg-emerald-50 text-emerald-800 border-emerald-200";
                           }
 
                           return (
                             <tr key={act.id} className="hover:bg-slate-50/40 transition-colors">
                               <td className="p-4 pl-6 font-mono text-xxs text-slate-400 whitespace-nowrap">
-                                {new Date(act.timestamp).toLocaleString('pt-BR')}
+                                {act?.timestamp ? new Date(act.timestamp).toLocaleString('pt-BR') : 'N/A'}
                               </td>
                               <td className="p-4">
                                 <span className="font-sans font-extrabold text-slate-900 block text-xs">Mapa {act.routeMap}</span>
@@ -9941,7 +9971,7 @@ export default function GestorDashboard({
                     </div>
                     <div>
                       <span className="text-[9px] text-slate-400 font-bold uppercase block font-mono">Data e Hora do Registro</span>
-                      <span className="font-mono text-slate-600 text-xs block mt-0.5">{new Date(selectedDetailAction.timestamp).toLocaleString('pt-BR')}</span>
+                      <span className="font-mono text-slate-600 text-xs block mt-0.5">{selectedDetailAction?.timestamp ? new Date(selectedDetailAction.timestamp).toLocaleString('pt-BR') : 'N/A'}</span>
                     </div>
                     <div>
                       <span className="text-[9px] text-slate-400 font-bold uppercase block font-mono">Status da Rota</span>

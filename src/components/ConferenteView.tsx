@@ -2281,14 +2281,6 @@ export default function ConferenteView({
       const isSubmittedToFiscal = matchingAudit && (matchingAudit.status === 'conferido_fisico' || matchingAudit.status === 'recontagem_finalizada');
       const isClosed = (isRouteClosedInAudits(route.routeMap || '') || (route.status as string) === 'fechado' || isFinalizedInAudit) && !isReopeningReq;
 
-      const todayStr = new Date().toISOString().split('T')[0];
-      const isPastRoute = !!(route.routeDate && route.routeDate < todayStr);
-      const isPernoiteRoute = route.isPernoite || matchingAudit?.isPernoite || false;
-
-      if (isPastRoute && !isPernoiteRoute && !isReopeningReq) {
-        return;
-      }
-
       // Only include routes that are truly open/pending for physical count
       if ((!isClosed && !isSubmittedToFiscal && (route.status as string) !== 'em_analise') || isReopeningReq) {
         processedMaps.add(routeMapUpper);
@@ -2757,7 +2749,7 @@ export default function ConferenteView({
                               <strong className="text-slate-700">Ajudante:</strong> {getHelperName(audit.helperId)}
                             </div>
                             <div>
-                              <strong className="text-slate-700">KM Chegada:</strong> {audit.arrivalKm.toLocaleString()} km
+                              <strong className="text-slate-700">KM Chegada:</strong> {typeof audit.arrivalKm === 'number' ? audit.arrivalKm.toLocaleString() : (audit.arrivalKm || 'N/A')} km
                             </div>
                             <div>
                               <strong className="text-slate-700">Data:</strong> {formatDateToDiaMesAno(audit.arrivalDate)}
@@ -5082,8 +5074,14 @@ export default function ConferenteView({
                       onChange={(e) => setGuiaEmpilhadorName(e.target.value)}
                       className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-amber-500"
                     >
-                      {(empilhadores && empilhadores.length > 0 ? empilhadores : DEFAULT_EMP_LIST).map((emp, idx) => (
-                        <option key={emp.id ? `${emp.id}_${idx}` : `emp_${idx}`} value={emp.name}>{emp.name}</option>
+                      {Array.from(
+                        new Map(
+                          (empilhadores && empilhadores.length > 0 ? empilhadores : DEFAULT_EMP_LIST)
+                            .filter(Boolean)
+                            .map(e => [(e.name || e.id || '').trim().toLowerCase(), e])
+                        ).values()
+                      ).map((emp, idx) => (
+                        <option key={`${emp.id || 'emp'}_${idx}`} value={emp.name}>{emp.name}</option>
                       ))}
                     </select>
                   </div>

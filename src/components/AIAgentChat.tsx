@@ -150,7 +150,7 @@ ${auditList.map((a: any) => {
 }).join('\n') || 'Nenhuma auditoria com divergência registrada no momento.'}
 
 Lista de Vales de Faltas Gerados na Unidade por Colaborador:
-${valeList.map((v: any) => `- Vale ID: ${v.id} | Colaborador: ${v.colaboradorName} (${v.colaboradorRole}) | Valor: R$ ${v.valor.toFixed(2)} | Motivo: ${v.descricao} | Status: ${v.status} | Obs: ${v.observacao || 'Sem observação'}`).join('\n') || 'Nenhum vale gerado.'}
+${valeList.map((v: any) => `- Vale ID: ${v.id} | Colaborador: ${v.colaboradorName || 'Colaborador'} (${v.colaboradorRole || 'N/A'}) | Valor: R$ ${(Number(v.valor) || 0).toFixed(2)} | Motivo: ${v.descricao || 'Desvio'} | Status: ${v.status || 'PENDENTE_ASSINATURA'} | Obs: ${v.observacao || 'Sem observação'}`).join('\n') || 'Nenhum vale gerado.'}
 `;
       } catch (dbError) {
         console.error("Erro ao obter dados dinâmicos para chat:", dbError);

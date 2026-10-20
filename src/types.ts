@@ -268,16 +268,15 @@ export interface ImportedRoute {
   };
 }
 
-export function isTreatableAssetId(assetId?: string): boolean {
-  if (!assetId) return false;
+export function isTreatableAssetId(assetId: string): boolean {
   const id = assetId.toLowerCase();
   // Filter out pallets and chapatex/other non-bottle/crate assets
   return id !== 'pal_pbr' && id !== 'chapatex' && !id.includes('palete') && !id.includes('pallet') && !id.includes('chapatex');
 }
 
-export function getAssetCode(assetId?: string, assetName?: string): string {
-  const id = (assetId || '').toLowerCase();
-  const normName = (assetName || '').toUpperCase().replace(/\s+/g, '');
+export function getAssetCode(assetId: string, assetName: string): string {
+  const id = assetId.toLowerCase();
+  const normName = assetName.toUpperCase().replace(/\s+/g, '');
   
   if (normName.includes('GARRAFEIRA1L')) return '188005';
   if (normName.includes('GARRAFEIRA600')) return '899599';

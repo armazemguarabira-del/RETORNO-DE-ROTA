@@ -33,7 +33,17 @@ export default function App() {
   const [activeAssets, setActiveAssets] = useState<ActiveAsset[]>([]);
   const [audits, setAudits] = useState<AuditSession[]>([]);
   const [vales, setVales] = useState<Vale[]>([]);
-  const [empilhadores, setEmpilhadores] = useState<Empilhador[]>(DEFAULT_EMPILHADORES);
+  const [empilhadores, setEmpilhadores] = useState<Empilhador[]>(() => {
+    // Deduplicate and sanitize default list on boot
+    const seen = new Set<string>();
+    return DEFAULT_EMPILHADORES.filter(e => {
+      if (!e) return false;
+      const k = (e.id || e.matricula || e.name || '').trim().toLowerCase();
+      if (!k || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  });
   const [carregamentos, setCarregamentos] = useState<CarregamentoProcess[]>([]);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [customManualHTML, setCustomManualHTML] = useState<string>('');
@@ -451,18 +461,55 @@ export default function App() {
     }, 300);
   };
 
-  // Helper to repair missing or broken product descriptions
-  const repairProductsList = (list: Product[]) => {
-    if (!list) return [];
-    return list.map(p => {
-      if (p.description === p.code || !p.description || p.description.trim() === '') {
-        const original = DEFAULT_PRODUCTS.find(dp => dp.code === p.code);
-        if (original) {
-          return { ...p, description: original.description };
-        }
-      }
-      return p;
+  // Helper to repair missing, broken or misaligned product descriptions
+  const repairProductsList = (list: Product[]): Product[] => {
+    const productMap = new Map<string, Product>();
+
+    // Seed with all DEFAULT_PRODUCTS first
+    DEFAULT_PRODUCTS.forEach(dp => {
+      productMap.set(dp.code, { ...dp });
     });
+
+    if (Array.isArray(list)) {
+      list.filter(Boolean).forEach(p => {
+        // Check if this was a misaligned import where code was set to skuFactor (e.g. "100", "12", "15"...)
+        const canonicalByDesc = DEFAULT_PRODUCTS.find(dp => 
+          dp.description.trim().toUpperCase() === (p.description || '').trim().toUpperCase()
+        );
+
+        const realCode = canonicalByDesc ? canonicalByDesc.code : p.code;
+        const original = DEFAULT_PRODUCTS.find(dp => dp.code === realCode);
+
+        const numCost = typeof p.cost === 'number' && !isNaN(p.cost) && p.cost > 0
+          ? p.cost
+          : (original?.cost !== undefined ? original.cost : (parseFloat(String(p.cost || 0)) || 0));
+
+        const numHecto = typeof p.hectoFactor === 'number' && !isNaN(p.hectoFactor) && p.hectoFactor > 0 && p.hectoFactor < 10
+          ? p.hectoFactor
+          : (original?.hectoFactor !== undefined ? original.hectoFactor : (parseFloat(String(p.hectoFactor || 0)) || 0.01));
+
+        const desc = (p.description === p.code || !p.description || p.description.trim() === '')
+          ? (original?.description || p.description || realCode || 'Produto')
+          : (canonicalByDesc?.description || p.description);
+
+        const merged: Product = {
+          code: realCode,
+          description: desc,
+          group: original?.group || p.group || 'CERVEJA',
+          unit: original?.unit || p.unit || 'cx',
+          palletFactor: original?.palletFactor || p.palletFactor || 84,
+          skuFactor: original?.skuFactor || p.skuFactor || 1,
+          hectoFactor: numHecto,
+          cost: numCost,
+          curve: original?.curve || p.curve || 'C',
+          photoUrl: p.photoUrl || original?.photoUrl
+        };
+
+        productMap.set(realCode, merged);
+      });
+    }
+
+    return Array.from(productMap.values());
   };
 
   // Normalization helper for Map Codes (strips leading zeros)
@@ -477,10 +524,55 @@ export default function App() {
       ...a,
       items: Array.isArray(a.items) ? a.items : [],
       assets: Array.isArray(a.assets) ? a.assets : [],
-      history: Array.isArray(a.history) ? a.history : [],
+      history: Array.isArray(a.history) 
+        ? a.history.filter(Boolean).map(h => ({
+            ...h,
+            action: h.action || 'Ação Registrada',
+            user: h.user || 'Sistema',
+            details: h.details || ''
+          })) 
+        : [],
       unifiedMaps: Array.isArray(a.unifiedMaps) ? a.unifiedMaps.map(normalizeMapCode) : [],
       routeMap: normalizeMapCode(a.routeMap),
     }));
+  };
+
+  const cleanEmpilhadores = (list: Empilhador[]): Empilhador[] => {
+    if (!list || !Array.isArray(list)) return [];
+    const seenIds = new Set<string>();
+    const seenMatriculas = new Set<string>();
+    const seenNames = new Set<string>();
+    const result: Empilhador[] = [];
+
+    for (const raw of list) {
+      if (!raw) continue;
+      const cleanId = (raw.id || '').trim();
+      const cleanMatricula = (raw.matricula || '').trim().toUpperCase();
+      const cleanName = (raw.name || '')
+        .trim()
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+
+      // Check if duplicate
+      if (cleanId && seenIds.has(cleanId)) continue;
+      if (cleanMatricula && cleanMatricula !== 'MAT-DPO' && seenMatriculas.has(cleanMatricula)) continue;
+      if (cleanName && cleanName.length >= 3 && seenNames.has(cleanName)) continue;
+
+      if (cleanId) seenIds.add(cleanId);
+      if (cleanMatricula && cleanMatricula !== 'MAT-DPO') seenMatriculas.add(cleanMatricula);
+      if (cleanName && cleanName.length >= 3) seenNames.add(cleanName);
+
+      result.push({
+        ...raw,
+        id: cleanId || `EMP-${cleanMatricula || Math.random().toString(36).substring(2, 7).toUpperCase()}`,
+        name: raw.name || 'Empilhador',
+        matricula: raw.matricula || 'MAT-DPO',
+        shift: raw.shift || '1_TURNO',
+        status: raw.status || 'DISPONIVEL'
+      });
+    }
+    return result;
   };
 
   const cleanImportedRoutes = (list: ImportedRoute[], currentAudits?: AuditSession[]): ImportedRoute[] => {
@@ -508,11 +600,18 @@ export default function App() {
   };
 
   const cleanVales = (list: Vale[]): Vale[] => {
-    if (!list) return [];
-    return list.map(v => ({
-      ...v,
-      routeMap: v.routeMap ? normalizeMapCode(v.routeMap) : undefined
-    }));
+    if (!list || !Array.isArray(list)) return [];
+    return list.map(v => {
+      if (!v) return v;
+      const numValor = typeof v.valor === 'number' && !isNaN(v.valor) ? v.valor : (parseFloat(String(v.valor || 0)) || 0);
+      const numColabValor = v.colaboradorValor !== undefined ? (typeof v.colaboradorValor === 'number' && !isNaN(v.colaboradorValor) ? v.colaboradorValor : (parseFloat(String(v.colaboradorValor || 0)) || 0)) : undefined;
+      return {
+        ...v,
+        valor: numValor,
+        colaboradorValor: numColabValor,
+        routeMap: v.routeMap ? normalizeMapCode(v.routeMap) : undefined
+      };
+    }).filter(Boolean);
   };
 
   const cleanReturnForecasts = (list: ReturnForecast[]): ReturnForecast[] => {
@@ -623,14 +722,7 @@ export default function App() {
     }
 
     if (db.empilhadores !== undefined && Array.isArray(db.empilhadores)) {
-      const seenIds = new Set<string>();
-      const uniqueEmp = db.empilhadores.filter(e => {
-        const identifier = e.id || e.matricula || e.name;
-        if (!identifier || seenIds.has(identifier)) return false;
-        seenIds.add(identifier);
-        return true;
-      });
-      setEmpilhadores(uniqueEmp);
+      setEmpilhadores(cleanEmpilhadores(db.empilhadores));
     }
 
     if (db.carregamentoProcesses !== undefined && Array.isArray(db.carregamentoProcesses)) {
@@ -1045,8 +1137,9 @@ export default function App() {
   };
 
   const handleSaveProducts = (newProducts: Product[]) => {
-    setProducts(newProducts);
-    pushDatabaseToServer({ products: newProducts });
+    const repaired = repairProductsList(newProducts);
+    setProducts(repaired);
+    pushDatabaseToServer({ products: repaired });
   };
 
   const handleSaveAudits = (newAudits: AuditSession[]) => {
@@ -1113,8 +1206,9 @@ export default function App() {
   };
 
   const handleSaveEmpilhadores = (newEmpilhadores: Empilhador[]) => {
-    setEmpilhadores(newEmpilhadores);
-    pushDatabaseToServer({ empilhadores: newEmpilhadores });
+    const cleaned = cleanEmpilhadores(newEmpilhadores);
+    setEmpilhadores(cleaned);
+    pushDatabaseToServer({ empilhadores: cleaned });
   };
 
   const handleSaveCarregamentos = (newCarregamentos: CarregamentoProcess[]) => {

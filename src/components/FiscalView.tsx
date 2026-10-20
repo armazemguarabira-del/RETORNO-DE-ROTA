@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, FiscalAlert, ImportedRoute, RouteObservation, Vale, ValeCollaborator, ReturnForecast, getAssetCode, getAssetCanonicalName } from '../types';
-import { isClientFirebaseActive, saveDirectlyToFirestore, fetchDirectlyFromFirestore } from '../clientFirebase';
+import { isClientFirebaseActive, saveDirectlyToFirestore } from '../clientFirebase';
 import { ClipboardCheck, ShieldAlert, ArrowRight, ShieldCheck, CheckSquare, AlertTriangle, HelpCircle, Search, RefreshCw, XCircle, DollarSign, Calendar, SlidersHorizontal, FileSpreadsheet, Clock, CheckCircle2, Shield, Trash2, Camera, BarChart3, AlertCircle, Plus, PlusCircle, FileText, Check, Award, Eye, Calculator, Folder, Copy, X, ArrowUpCircle, ArrowDownCircle, Sparkles, FolderOpen, Download, FileCheck, PackageCheck, UserPlus, FileJson, Archive, Moon, Info, Edit3, Users } from 'lucide-react';
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { jsPDF } from 'jspdf';
@@ -1730,14 +1730,14 @@ export default function FiscalView({
               <tr style="background: #f1f5f9; font-weight: bold; border-top: 2px solid #cbd5e1;">
                 <td colspan="5" style="text-align: right; text-transform: uppercase; padding: 7px 9px;">Total do Desconto Autorizado:</td>
                 <td style="text-align: center; font-family: monospace; color: #dc2626; font-weight: bold; padding: 7px 9px;">-${detailedShortages.reduce((s, d) => s + d.diff, 0)} vol</td>
-                <td colspan="2" style="text-align: right; font-family: monospace; font-size: 13px; font-weight: 900; color: #dc2626; padding: 7px 9px;">R$ ${valeToPrint.valor.toFixed(2)}</td>
+                <td colspan="2" style="text-align: right; font-family: monospace; font-size: 13px; font-weight: 900; color: #dc2626; padding: 7px 9px;">R$ ${(Number(valeToPrint.valor) || 0).toFixed(2)}</td>
               </tr>
             </tbody>
           </table>
         ` : `
           <div style="background: #f8fafc; border: 1.5px solid #cbd5e1; border-radius: 6px; padding: 12px 15px; font-size: 12px;">
             <div><strong>Descrição da Falta:</strong> ${valeToPrint.descricao}</div>
-            <div style="margin-top: 5px; font-weight: bold; color: #dc2626; font-size: 13px;">Valor Total Autorizado: R$ ${valeToPrint.valor.toFixed(2)}</div>
+            <div style="margin-top: 5px; font-weight: bold; color: #dc2626; font-size: 13px;">Valor Total Autorizado: R$ ${(Number(valeToPrint.valor) || 0).toFixed(2)}</div>
           </div>
         `}
       </div>
@@ -2540,7 +2540,7 @@ export default function FiscalView({
 
   const handleFileImport = (file: File, isMerge: boolean = false) => {
     const reader = new FileReader();
-    reader.onload = async (e) => {
+    reader.onload = (e) => {
       const text = e.target?.result as string;
       if (!text) return;
 
@@ -2663,8 +2663,7 @@ export default function FiscalView({
       }
 
       const nowISO = new Date().toISOString();
-      const latestFromDb = await fetchDirectlyFromFirestore();
-      let mergedRoutes = [...(latestFromDb?.importedRoutes || importedRoutes)];
+      let mergedRoutes = [...importedRoutes];
       if (isMerge) {
         // Merge mode
         parsedRoutes.forEach(newR => {
@@ -2727,10 +2726,7 @@ export default function FiscalView({
         onSaveImportedRoutes(mergedRoutes);
       }
       if (isClientFirebaseActive()) {
-        const saved = await saveDirectlyToFirestore({ importedRoutes: mergedRoutes });
-        if (!saved) {
-          throw new Error("Falha ao salvar mapas no Firestore. Por favor, verifique sua conexão.");
-        }
+        saveDirectlyToFirestore({ importedRoutes: mergedRoutes });
       }
 
       // Sync forecast driver names
@@ -5018,10 +5014,11 @@ export default function FiscalView({
 
   // Filtering history lists
   const filteredHistory = historyAudits.filter(a => {
-    const matchesSearch = 
-      (a.routeMap || '').toLowerCase().includes((searchTerm || '').toLowerCase()) ||
-      (a.plate || '').toLowerCase().includes((searchTerm || '').toLowerCase()) ||
-      (getDriverName(a.driverId) || '').toLowerCase().includes((searchTerm || '').toLowerCase());
+    const q = (searchTerm || '').toLowerCase();
+    const matchesSearch = !q ||
+      (a.routeMap || '').toLowerCase().includes(q) ||
+      (a.plate || '').toLowerCase().includes(q) ||
+      getDriverName(a.driverId).toLowerCase().includes(q);
     
     // Check date bounds if configured
     let matchesDate = true;
@@ -7445,13 +7442,13 @@ export default function FiscalView({
                       <div className="bg-slate-800/80 p-3 rounded-lg border border-slate-700/60 text-center">
                         <span className="text-[10px] text-slate-400 font-mono uppercase block">Total Faltas (Qtd)</span>
                         <span className="text-xl font-bold text-red-400 block mt-1">{missingQtyTotal} itens</span>
-                        <span className="text-[9px] text-red-500 block">-R$ {lossValueTotal.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</span>
+                        <span className="text-[9px] text-red-500 block">-R$ {(Number(lossValueTotal) || 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</span>
                       </div>
 
                       <div className="bg-slate-800/80 p-3 rounded-lg border border-slate-700/60 text-center">
                         <span className="text-[10px] text-slate-400 font-mono uppercase block">Total Sobras (Qtd)</span>
                         <span className="text-xl font-bold text-amber-400 block mt-1">{surplusQtyTotal} itens</span>
-                        <span className="text-[9px] text-amber-500 block">+R$ {surplusValueTotal.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</span>
+                        <span className="text-[9px] text-amber-500 block">+R$ {(Number(surplusValueTotal) || 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</span>
                       </div>
                     </div>
                   );
@@ -7754,7 +7751,7 @@ export default function FiscalView({
                             {!isOk && (
                               <div className="bg-red-50 text-red-700 border border-red-100 p-1.5 rounded font-semibold mt-2 text-[9px] flex justify-between items-center">
                                 <span>Faltas: {stats.missingCount} | Sobras: {stats.surplusCount}</span>
-                                <span>Impacto: R$ {(stats.missingCost + stats.surplusCost).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</span>
+                                <span>Impacto: R$ {(Number((stats.missingCost || 0) + (stats.surplusCost || 0)) || 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</span>
                               </div>
                             )}
                             {isOk && (
@@ -9687,7 +9684,7 @@ export default function FiscalView({
                                 {vale.routeMap !== 'AVULSO' ? `Mapa ${vale.routeMap}` : 'AVULSO'}
                               </td>
                               <td className="py-3 px-3 text-right font-mono font-bold text-slate-900">
-                                R$ {vale.valor.toFixed(2)}
+                                R$ {(Number(vale.valor) || 0).toFixed(2)}
                               </td>
                               <td className="py-3 px-3 text-center">
                                 <span className={`inline-block px-2 py-0.5 text-[9px] font-black uppercase rounded-full ${
@@ -9752,7 +9749,7 @@ export default function FiscalView({
                                       onClick={() => {
                                         requestConfirm(
                                           'Confirmar Compensação',
-                                          `Tem certeza de que deseja faturar e marcar este vale no valor de R$ ${vale.valor.toFixed(2)} para ${vale.colaboradorName} como COMPENSADO?`,
+                                          `Tem certeza de que deseja faturar e marcar este vale no valor de R$ ${(Number(vale.valor) || 0).toFixed(2)} para ${vale.colaboradorName} como COMPENSADO?`,
                                           () => {
                                             const updated = vales.map(v => v.id === vale.id ? { ...v, status: 'COMPENSADO' as const } : v);
                                             onSaveVales?.(updated);
@@ -9784,7 +9781,7 @@ export default function FiscalView({
                                     onClick={() => {
                                       requestConfirm(
                                         'Excluir Vale',
-                                        `Deseja realmente excluir este vale no valor de R$ ${vale.valor.toFixed(2)} para ${vale.colaboradorName}?`,
+                                        `Deseja realmente excluir este vale no valor de R$ ${(Number(vale.valor) || 0).toFixed(2)} para ${vale.colaboradorName}?`,
                                         () => {
                                           const updated = vales.filter(v => v.id !== vale.id);
                                           onSaveVales(updated);
@@ -10001,10 +9998,10 @@ export default function FiscalView({
                         <p className="text-xs sm:text-sm leading-relaxed text-justify bg-amber-50/60 p-4 rounded-xl border border-amber-200 text-slate-900">
                           Eu, <strong>{viewingVale.colaboradorName}</strong>, registrado sob o papel de <strong>{viewingVale.colaboradorRole}</strong>
                           {viewingVale.colaboradoresAdicionais && viewingVale.colaboradoresAdicionais.length > 0 && (
-                            <span> em conjunto com o(s) colaborador(es) co-responsável(is) {viewingVale.colaboradoresAdicionais.map((c, i) => (
-                              <strong key={i}> {c.name} ({c.role}{c.valor ? ` - R$ ${c.valor.toFixed(2)}` : ''})</strong>
+                            <span> em conjunto com o(s) colaborador(es) co-responsável(is) {(viewingVale.colaboradoresAdicionais || []).map((c, i) => (
+                              <strong key={i}> {c.name} ({c.role}{c.valor ? ` - R$ ${(Number(c.valor) || 0).toFixed(2)}` : ''})</strong>
                             ))}</span>
-                          )}, autorizo(amos) expressamente a empresa <strong>PAU BRASIL DISTRIBUIDORA LTDA</strong> a descontar em folha de pagamento a importância líquida de <strong>R$ {viewingVale.valor.toFixed(2)}</strong> ({viewingVale.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}), referente aos desvios físicos ou avarias constatados no retorno do <strong>{viewingVale.routeMap !== 'AVULSO' ? `Mapa de Carga nº ${viewingVale.routeMap}` : 'Mapa de Carga Avulso'}</strong>.
+                          )}, autorizo(amos) expressamente a empresa <strong>PAU BRASIL DISTRIBUIDORA LTDA</strong> a descontar em folha de pagamento a importância líquida de <strong>R$ {(Number(viewingVale.valor) || 0).toFixed(2)}</strong> ({Number(viewingVale.valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}), referente aos desvios físicos ou avarias constatados no retorno do <strong>{viewingVale.routeMap !== 'AVULSO' ? `Mapa de Carga nº ${viewingVale.routeMap}` : 'Mapa de Carga Avulso'}</strong>.
                         </p>
 
                         {/* Informações sobre a Rota e Equipe (Colaboradores Envolvidos) */}
@@ -10018,9 +10015,9 @@ export default function FiscalView({
                           </div>
                           <div className="space-y-1.5">
                             <span className="text-slate-500 text-[10px] font-bold uppercase tracking-wider block border-b border-slate-200 pb-1">Colaboradores da Operação & Aferição</span>
-                            <div><strong>Responsável Principal:</strong> <span className="font-semibold text-slate-900 ml-1">{viewingVale.colaboradorName} ({viewingVale.colaboradorRole}{viewingVale.colaboradorValor ? ` - Cota: R$ ${viewingVale.colaboradorValor.toFixed(2)}` : ''})</span></div>
+                            <div><strong>Responsável Principal:</strong> <span className="font-semibold text-slate-900 ml-1">{viewingVale.colaboradorName} ({viewingVale.colaboradorRole}{viewingVale.colaboradorValor ? ` - Cota: R$ ${(Number(viewingVale.colaboradorValor) || 0).toFixed(2)}` : ''})</span></div>
                             {viewingVale.colaboradoresAdicionais && viewingVale.colaboradoresAdicionais.length > 0 ? (
-                              <div><strong>Co-responsáveis:</strong> <span className="text-slate-700 ml-1">{viewingVale.colaboradoresAdicionais.map(c => `${c.name} (${c.role}${c.valor ? ` - Cota: R$ ${c.valor.toFixed(2)}` : ''})`).join(', ')}</span></div>
+                              <div><strong>Co-responsáveis:</strong> <span className="text-slate-700 ml-1">{viewingVale.colaboradoresAdicionais.map(c => `${c.name} (${c.role}${c.valor ? ` - Cota: R$ ${(Number(c.valor) || 0).toFixed(2)}` : ''})`).join(', ')}</span></div>
                             ) : (
                               <div><strong>Ajudante de Rota:</strong> <span className="text-slate-700 ml-1">{helperName}</span></div>
                             )}
@@ -10057,8 +10054,8 @@ export default function FiscalView({
                                       <td className="py-2 px-3 text-center font-mono">{item.found}</td>
                                       <td className="py-2 px-3 text-center font-mono font-bold text-amber-600">{item.comodato > 0 ? item.comodato : '-'}</td>
                                       <td className="py-2 px-3 text-center font-mono text-red-600 font-bold">-{item.diff}</td>
-                                      <td className="py-2 px-3 text-right font-mono">R$ {item.cost.toFixed(2)}</td>
-                                      <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">R$ {item.totalCost.toFixed(2)}</td>
+                                      <td className="py-2 px-3 text-right font-mono">R$ {(Number(item.cost) || 0).toFixed(2)}</td>
+                                      <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">R$ {(Number(item.totalCost) || 0).toFixed(2)}</td>
                                     </tr>
                                   ))}
                                   {detailedShortages.length > 5 && (
@@ -10066,13 +10063,13 @@ export default function FiscalView({
                                       <td colSpan={5} className="py-2 px-3">+ {detailedShortages.length - 5} outros itens detalhados no sistema de conferência</td>
                                       <td className="py-2 px-3 text-center font-mono font-bold text-red-600">-{detailedShortages.slice(5).reduce((s, d) => s + d.diff, 0)}</td>
                                       <td className="py-2 px-3 text-right">---</td>
-                                      <td className="py-2 px-3 text-right font-mono font-bold">R$ {detailedShortages.slice(5).reduce((s, d) => s + d.totalCost, 0).toFixed(2)}</td>
+                                      <td className="py-2 px-3 text-right font-mono font-bold">R$ {detailedShortages.slice(5).reduce((s, d) => s + (Number(d.totalCost) || 0), 0).toFixed(2)}</td>
                                     </tr>
                                   )}
                                   <tr className="bg-slate-100 font-bold text-slate-900 text-xs border-t-2 border-slate-300">
                                     <td colSpan={5} className="py-2 px-3 text-right uppercase">Total Descontado:</td>
                                     <td className="py-2 px-3 text-center font-mono text-red-600 font-black">-{detailedShortages.reduce((sum, d) => sum + d.diff, 0)} vol</td>
-                                    <td colSpan={2} className="py-2 px-3 text-right font-mono font-black text-red-600 text-sm">R$ {viewingVale.valor.toFixed(2)}</td>
+                                    <td colSpan={2} className="py-2 px-3 text-right font-mono font-black text-red-600 text-sm">R$ {(Number(viewingVale.valor) || 0).toFixed(2)}</td>
                                   </tr>
                                 </tbody>
                               </table>
@@ -10080,7 +10077,7 @@ export default function FiscalView({
                           ) : (
                             <div className="border border-slate-200 rounded-xl p-4 text-xs sm:text-sm text-slate-700 space-y-1.5 bg-slate-50 leading-relaxed">
                               <div><strong>Detalhamento dos Itens / Avarias:</strong> <span className="font-semibold text-slate-900 ml-1">{viewingVale.descricao}</span></div>
-                              <div className="text-xs text-slate-500 font-mono">Valor Total de Desconto: <strong className="text-slate-900">R$ {viewingVale.valor.toFixed(2)}</strong></div>
+                              <div className="text-xs text-slate-500 font-mono">Valor Total de Desconto: <strong className="text-slate-900">R$ {(Number(viewingVale.valor) || 0).toFixed(2)}</strong></div>
                             </div>
                           )}
                         </div>
@@ -11262,8 +11259,8 @@ export default function FiscalView({
                       }
 
                       const prodInfo = products.find(p => p.code === item.productCode);
-                      const costValue = prodInfo ? prodInfo.cost : item.cost;
-                      const hectoValue = prodInfo ? prodInfo.hectoFactor : 0.01;
+                      const costValue = Number(prodInfo ? prodInfo.cost : item.cost) || 0;
+                      const hectoValue = Number(prodInfo ? prodInfo.hectoFactor : 0.01) || 0.01;
 
                       return (
                         <div key={item.productCode} className="p-4 rounded-lg border border-slate-150 bg-slate-50/50 grid grid-cols-1 sm:grid-cols-12 sm:items-center gap-4 hover:bg-slate-50 transition">
@@ -11275,19 +11272,19 @@ export default function FiscalView({
                             
                             <div className="flex flex-wrap gap-1.5 pt-1">
                               <span className="text-[10px] text-slate-500 bg-slate-100/80 border border-slate-200/60 px-1.5 py-0.5 rounded-md font-mono flex items-center">
-                                Custo: R$ {costValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                Custo: R$ {(costValue || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                               </span>
                               <span className="text-[10px] text-slate-500 bg-slate-100/80 border border-slate-200/60 px-1.5 py-0.5 rounded-md font-mono flex items-center">
-                                Hecto: {hectoValue.toLocaleString('pt-BR', { minimumFractionDigits: 4 })} HL
+                                Hecto: {(hectoValue || 0).toLocaleString('pt-BR', { minimumFractionDigits: 4 })} HL
                               </span>
                               {diff !== 0 && (
                                 <span className="text-[10px] font-bold text-red-600 bg-red-50 border border-red-150 px-1.5 py-0.5 rounded-md font-mono flex items-center">
-                                  Custo Desvio: R$ {Math.abs(diff * costValue).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                  Custo Desvio: R$ {(Number(Math.abs(diff * costValue)) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                                 </span>
                               )}
                               {diff !== 0 && (
                                 <span className="text-[10px] font-bold text-amber-600 bg-amber-50 border border-amber-150 px-1.5 py-0.5 rounded-md font-mono flex items-center">
-                                  Vol. Desvio: {(Math.abs(diff) * hectoValue).toLocaleString('pt-BR', { minimumFractionDigits: 4 })} HL
+                                  Vol. Desvio: {(Number(Math.abs(diff) * hectoValue) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 4 })} HL
                                 </span>
                               )}
                             </div>
@@ -11437,11 +11434,11 @@ export default function FiscalView({
 
                             <div className="flex flex-wrap gap-1.5 pt-1">
                               <span className="text-[10px] text-slate-500 bg-slate-100/80 border border-slate-200/60 px-1.5 py-0.5 rounded-md font-mono flex items-center">
-                                Custo: R$ {asset.cost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                Custo: R$ {(Number(asset.cost) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                               </span>
                               {diff !== 0 && (
                                 <span className="text-[10px] font-bold text-red-600 bg-red-50 border border-red-150 px-1.5 py-0.5 rounded-md font-mono flex items-center">
-                                  Custo Desvio: R$ {Math.abs(diff * asset.cost).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                  Custo Desvio: R$ {(Number(Math.abs(diff * (Number(asset.cost) || 0))) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                                 </span>
                               )}
                             </div>
@@ -11748,7 +11745,7 @@ export default function FiscalView({
                               <div className="flex justify-between items-center text-sm font-semibold">
                                 <span className="text-slate-400">Impacto (Prejuízo):</span>
                                 <span className="text-red-400 font-mono">
-                                  -R$ {stats.missingCost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                  -R$ {(Number(stats.missingCost) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                                 </span>
                               </div>
                             )}
@@ -11757,7 +11754,7 @@ export default function FiscalView({
                               <div className="flex justify-between items-center text-sm font-semibold">
                                 <span className="text-slate-400">Sobrantes (Ajuste):</span>
                                 <span className="text-amber-400 font-mono">
-                                  +R$ {stats.surplusCost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                  +R$ {(Number(stats.surplusCost) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                                 </span>
                               </div>
                             )}
