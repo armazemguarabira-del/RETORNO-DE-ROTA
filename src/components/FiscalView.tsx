@@ -755,8 +755,8 @@ export default function FiscalView({
     let updatedRoutes = importedRoutes;
     if (onSaveImportedRoutes && importedRoutes.length > 0) {
       updatedRoutes = importedRoutes.map(r => {
-        const match = (targetMap && r.routeMap && r.routeMap.toUpperCase() === targetMap) ||
-                      (targetPlate && r.plate && r.plate.toUpperCase() === targetPlate);
+        const rMap = (r.routeMap || '').toUpperCase().trim();
+        const match = targetMap ? (rMap === targetMap) : (targetPlate && r.plate && r.plate.toUpperCase().trim() === targetPlate);
         if (match) {
           return {
             ...r,
@@ -775,8 +775,8 @@ export default function FiscalView({
     let updatedAudits = audits;
     if (onSaveAudits && audits.length > 0) {
       updatedAudits = audits.map(a => {
-        const match = (targetMap && a.routeMap && a.routeMap.toUpperCase() === targetMap) ||
-                      (targetPlate && a.plate && a.plate.toUpperCase() === targetPlate);
+        const aMap = (a.routeMap || '').toUpperCase().trim();
+        const match = targetMap ? (aMap === targetMap) : (targetPlate && a.plate && a.plate.toUpperCase().trim() === targetPlate);
         if (match) {
           return {
             ...a,
@@ -795,8 +795,8 @@ export default function FiscalView({
     let updatedForecasts = returnForecasts;
     if (onSaveForecasts && returnForecasts.length > 0) {
       updatedForecasts = returnForecasts.map(f => {
-        const match = (targetMap && f.routeMap && f.routeMap.toUpperCase() === targetMap) ||
-                      (targetPlate && f.plate && f.plate.toUpperCase() === targetPlate);
+        const fMap = (f.routeMap || '').toUpperCase().trim();
+        const match = targetMap ? (fMap === targetMap) : (targetPlate && f.plate && f.plate.toUpperCase().trim() === targetPlate);
         if (match) {
           return {
             ...f,
@@ -812,8 +812,8 @@ export default function FiscalView({
     let updatedCarreg = carregamentos;
     if (onSaveCarregamentos && carregamentos && carregamentos.length > 0) {
       updatedCarreg = carregamentos.map(c => {
-        const match = (targetMap && c.routeMap && c.routeMap.toUpperCase() === targetMap) ||
-                      (targetPlate && c.plate && c.plate.toUpperCase() === targetPlate);
+        const cMap = (c.routeMap || '').toUpperCase().trim();
+        const match = targetMap ? (cMap === targetMap) : (targetPlate && c.plate && c.plate.toUpperCase().trim() === targetPlate);
         if (match) {
           return {
             ...c,

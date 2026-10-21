@@ -178,7 +178,7 @@ export function calculateDescarregamentoEfficiency(
   relevantRoutes.forEach(r => {
     const mapCode = r.routeMap?.toUpperCase().trim() || r.id;
     processedMapCodes.add(mapCode);
-    const matchedProc = procByMap.get(mapCode) || procByPlate.get(r.plate?.toUpperCase().trim());
+    const matchedProc = procByMap.get(mapCode);
     allEntries.push({
       routeMap: r.routeMap,
       plate: r.plate,
@@ -302,7 +302,6 @@ export function calculateCycleMetrics(
   const procByMap = new Map<string, CarregamentoProcess>();
   carregamentos.forEach(p => {
     if (p.routeMap) procByMap.set(p.routeMap.toUpperCase().trim(), p);
-    if (p.plate) procByMap.set(p.plate.toUpperCase().trim(), p);
   });
 
   const processedMapCodes = new Set<string>();

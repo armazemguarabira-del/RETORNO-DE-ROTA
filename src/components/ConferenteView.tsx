@@ -3031,10 +3031,6 @@ export default function ConferenteView({
                           <div 
                             className="flex items-center justify-between gap-2 cursor-pointer hover:opacity-90 w-full min-w-0"
                             onClick={() => {
-                              if (selectedRouteMaps.length > 0) {
-                                handleToggleRouteMap(route.routeMap);
-                                return;
-                              }
                               const isUnloaded = checkRouteIsUnloaded(route.routeMap, route.plate);
                               if (!isUnloaded) {
                                 handleOpenGuiaModal({
@@ -3060,9 +3056,28 @@ export default function ConferenteView({
                                   return;
                                 }
                               }
-                              handleToggleRouteMap(route.routeMap);
+                              // Selecting a single route for conference
+                              const upper = route.routeMap.trim().toUpperCase();
+                              if (selectedRouteMaps.length === 1 && selectedRouteMaps[0] === upper) {
+                                setSelectedRouteMaps([]);
+                                setRouteMap('');
+                                setPlate('');
+                                setDriverId('');
+                                setHelperId('');
+                              } else {
+                                setSelectedRouteMaps([upper]);
+                                setRouteMap(upper);
+                                setPlate(route.plate || '');
+                                if (route.driverId || route.driverName) {
+                                  autoSelectDriverForRoute({ driverId: route.driverId, driverName: route.driverName });
+                                } else {
+                                  setDriverId('');
+                                }
+                                const foundHelper = route.helperName ? drivers.find(d => d.role === 'AJUDANTE' && d.name.toLowerCase() === route.helperName?.toLowerCase()) : undefined;
+                                setHelperId(foundHelper?.id || (route as any).helperId || '');
+                              }
                             }}
-                            title={selectedRouteMaps.length > 0 ? "Clique para selecionar/desmarcar este mapa" : route.audit ? "Clique para abrir e conferir este mapa" : "Clique para selecionar este mapa"}
+                            title={route.audit ? "Clique para abrir e conferir este mapa" : "Clique para selecionar apenas este mapa"}
                           >
                             <div className="flex items-center space-x-2 min-w-0 flex-1 truncate">
                               {(isPendente || isReabertura || isReconferir || isConferindo) && (

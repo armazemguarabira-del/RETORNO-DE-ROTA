@@ -1530,7 +1530,7 @@ export default function LigaView({
                           );
 
                           return (
-                            <div key={v.plate} className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg border text-xs ${
+                            <div key={`${v.routeMap}_${v.plate}`} className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg border text-xs ${
                               isCovered 
                                 ? 'bg-emerald-50 border-emerald-200 text-emerald-900 font-bold'
                                 : 'bg-slate-50 border-slate-200 text-slate-800'

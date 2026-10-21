@@ -1071,7 +1071,7 @@ export default function GestorDashboard({
 
     // B) Process importedRoutes that are discharged but not in carregamentos
     importedRoutes.forEach(r => {
-      const alreadyIn = list.some(item => item.routeMap === r.routeMap || (r.plate && item.plate === r.plate));
+      const alreadyIn = list.some(item => item.routeMap === r.routeMap);
       if (!alreadyIn && (r.descarregamentoStatus === 'DESCARREGADO' || r.unloadingEndTime)) {
         let dur = 0;
         if (r.unloadingStartTime && r.unloadingEndTime) {
@@ -1101,7 +1101,7 @@ export default function GestorDashboard({
 
     // C) Merge with EFD_REAL_RECORDS_160
     EFD_REAL_RECORDS_160.forEach(rec => {
-      const alreadyIn = list.some(item => item.routeMap === rec.mapCode || item.plate === rec.plate);
+      const alreadyIn = list.some(item => item.routeMap === rec.mapCode);
       if (!alreadyIn) {
         const dateStr = extractDateDMY(rec.arrivalTime || rec.departureTime);
         const dur = getSeedDuration(rec.empilhador, rec.id);

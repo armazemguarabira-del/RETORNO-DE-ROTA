@@ -505,8 +505,7 @@ export default function EmpilhadorView({
       const existsInImported = (importedRoutes || []).some(r => {
         const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
         const rUpper = (r.routeMap || '').toUpperCase().trim();
-        const rPlate = (r.plate || '').toUpperCase().trim();
-        return (rNorm && rNorm === aMapNorm) || (rUpper && rUpper === aMapUpper) || (rPlate && rPlate === aPlateUpper);
+        return (rNorm && rNorm === aMapNorm) || (rUpper && rUpper === aMapUpper);
       });
       const hasActualCountedData = (a.items && a.items.length > 0) || (a.assets && a.assets.length > 0) || (a.exchanges && a.exchanges.length > 0);
 
@@ -737,14 +736,20 @@ export default function EmpilhadorView({
       completedBy: opName
     };
 
-    // 1. Update importedRoutes
+    const targetMap = (checklistVehicle.routeMap || '').toUpperCase().trim();
+    const targetMapNorm = normalizeMapCode(checklistVehicle.routeMap).toUpperCase();
+    const targetId = checklistVehicle.routeRef?.id || checklistVehicle.id;
+
+    // 1. Update importedRoutes strictly by map / id
     let updatedRoutes = importedRoutes;
     if (importedRoutes.length > 0) {
       updatedRoutes = importedRoutes.map(r => {
-        if (
-          (r.routeMap && r.routeMap.toUpperCase() === checklistVehicle.routeMap.toUpperCase()) ||
-          (r.plate && r.plate.toUpperCase() === checklistVehicle.plate.toUpperCase())
-        ) {
+        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+        const rUpper = (r.routeMap || '').toUpperCase().trim();
+        const isMatched = (targetId && (r.id === targetId || `route_${r.id}` === targetId)) ||
+          (targetMap && targetMap !== '—' && (rUpper === targetMap || rNorm === targetMapNorm));
+
+        if (isMatched) {
           return {
             ...r,
             descarregamentoStatus: 'EM_DESCARGA' as const,
@@ -763,14 +768,17 @@ export default function EmpilhadorView({
       if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
     }
 
-    // 2. Update audits
+    // 2. Update audits strictly by map / id
     let updatedAudits = audits;
     if (audits.length > 0) {
+      const targetAuditId = checklistVehicle.auditRef?.id;
       updatedAudits = audits.map(a => {
-        if (
-          (a.routeMap && a.routeMap.toUpperCase() === checklistVehicle.routeMap.toUpperCase()) ||
-          (a.plate && a.plate.toUpperCase() === checklistVehicle.plate.toUpperCase())
-        ) {
+        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
+        const aUpper = (a.routeMap || '').toUpperCase().trim();
+        const isMatched = (targetAuditId && a.id === targetAuditId) ||
+          (targetMap && targetMap !== '—' && (aUpper === targetMap || aNorm === targetMapNorm || (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === targetMapNorm || m.toUpperCase().trim() === targetMap))));
+
+        if (isMatched) {
           return {
             ...a,
             descarregamentoStatus: 'EM_DESCARGA' as const,
@@ -789,11 +797,12 @@ export default function EmpilhadorView({
       if (onSaveAudits) onSaveAudits(updatedAudits);
     }
 
-    // 3. Update or create CarregamentoProcess
-    const existingProc = carregamentos.find(c => 
-      (c.routeMap && c.routeMap.toUpperCase() === checklistVehicle.routeMap.toUpperCase()) ||
-      (c.plate && c.plate.toUpperCase() === checklistVehicle.plate.toUpperCase())
-    );
+    // 3. Update or create CarregamentoProcess strictly by map
+    const existingProc = carregamentos.find(c => {
+      const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
+      const cUpper = (c.routeMap || '').toUpperCase().trim();
+      return targetMap && targetMap !== '—' && (cNorm === targetMapNorm || cUpper === targetMap);
+    });
 
     let updatedCarregamentos = carregamentos;
     if (existingProc) {
@@ -878,14 +887,20 @@ export default function EmpilhadorView({
   const handleFinishDescarregamento = (vehicle: ConnectedVehicle) => {
     const nowIso = new Date().toISOString();
 
-    // 1. Update importedRoutes
+    const targetMap = (vehicle.routeMap || '').toUpperCase().trim();
+    const targetMapNorm = normalizeMapCode(vehicle.routeMap).toUpperCase();
+    const targetId = vehicle.routeRef?.id || vehicle.id;
+
+    // 1. Update importedRoutes strictly by map / id
     let updatedRoutes = importedRoutes;
     if (importedRoutes.length > 0) {
       updatedRoutes = importedRoutes.map(r => {
-        if (
-          (r.routeMap && r.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-          (r.plate && r.plate.toUpperCase() === vehicle.plate.toUpperCase())
-        ) {
+        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+        const rUpper = (r.routeMap || '').toUpperCase().trim();
+        const isMatched = (targetId && (r.id === targetId || `route_${r.id}` === targetId)) ||
+          (targetMap && targetMap !== '—' && (rUpper === targetMap || rNorm === targetMapNorm));
+
+        if (isMatched) {
           return {
             ...r,
             descarregamentoStatus: 'DESCARREGADO' as const,
@@ -898,14 +913,17 @@ export default function EmpilhadorView({
       if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
     }
 
-    // 2. Update audits
+    // 2. Update audits strictly by map / id
     let updatedAudits = audits;
     if (audits.length > 0) {
+      const targetAuditId = vehicle.auditRef?.id;
       updatedAudits = audits.map(a => {
-        if (
-          (a.routeMap && a.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-          (a.plate && a.plate.toUpperCase() === vehicle.plate.toUpperCase())
-        ) {
+        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
+        const aUpper = (a.routeMap || '').toUpperCase().trim();
+        const isMatched = (targetAuditId && a.id === targetAuditId) ||
+          (targetMap && targetMap !== '—' && (aUpper === targetMap || aNorm === targetMapNorm || (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === targetMapNorm || m.toUpperCase().trim() === targetMap))));
+
+        if (isMatched) {
           return {
             ...a,
             descarregamentoStatus: 'DESCARREGADO' as const,
@@ -918,11 +936,12 @@ export default function EmpilhadorView({
       if (onSaveAudits) onSaveAudits(updatedAudits);
     }
 
-    // 3. Update carregamentos
-    const existingProc = carregamentos.find(c => 
-      (c.routeMap && c.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-      (c.plate && c.plate.toUpperCase() === vehicle.plate.toUpperCase())
-    );
+    // 3. Update carregamentos strictly by map
+    const existingProc = carregamentos.find(c => {
+      const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
+      const cUpper = (c.routeMap || '').toUpperCase().trim();
+      return targetMap && targetMap !== '—' && (cNorm === targetMapNorm || cUpper === targetMap);
+    });
 
     let updatedCarregamentos = carregamentos;
     if (existingProc) {
@@ -970,15 +989,20 @@ export default function EmpilhadorView({
   // HANDLER: TOGGLE PERNOITE
   const handleTogglePernoite = (vehicle: ConnectedVehicle) => {
     const nextPernoite = !vehicle.isPernoite;
+    const targetMap = (vehicle.routeMap || '').toUpperCase().trim();
+    const targetMapNorm = normalizeMapCode(vehicle.routeMap).toUpperCase();
+    const targetId = vehicle.routeRef?.id || vehicle.id;
 
     // 1. Update importedRoutes
     let updatedRoutes = importedRoutes;
     if (importedRoutes.length > 0) {
       updatedRoutes = importedRoutes.map(r => {
-        if (
-          (r.routeMap && r.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-          (r.plate && r.plate.toUpperCase() === vehicle.plate.toUpperCase())
-        ) {
+        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+        const rUpper = (r.routeMap || '').toUpperCase().trim();
+        const isMatched = (targetId && (r.id === targetId || `route_${r.id}` === targetId)) ||
+          (targetMap && targetMap !== '—' && (rUpper === targetMap || rNorm === targetMapNorm));
+
+        if (isMatched) {
           return {
             ...r,
             isPernoite: nextPernoite,
@@ -994,10 +1018,12 @@ export default function EmpilhadorView({
     let updatedAudits = audits;
     if (audits.length > 0) {
       updatedAudits = audits.map(a => {
-        if (
-          (a.routeMap && a.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-          (a.plate && a.plate.toUpperCase() === vehicle.plate.toUpperCase())
-        ) {
+        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
+        const aUpper = (a.routeMap || '').toUpperCase().trim();
+        const isMatched = (targetMap && targetMap !== '—' && (aUpper === targetMap || aNorm === targetMapNorm)) ||
+          (targetId && a.id === targetId);
+
+        if (isMatched) {
           return {
             ...a,
             isPernoite: nextPernoite,
@@ -1012,10 +1038,11 @@ export default function EmpilhadorView({
     // 3. Update forecasts
     if (onSaveForecasts && returnForecasts.length > 0) {
       const updatedForecasts = returnForecasts.map(f => {
-        if (
-          (f.routeMap && f.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-          (f.plate && f.plate.toUpperCase() === vehicle.plate.toUpperCase())
-        ) {
+        const fNorm = normalizeMapCode(f.routeMap).toUpperCase();
+        const fUpper = (f.routeMap || '').toUpperCase().trim();
+        const isMatched = targetMap && targetMap !== '—' && (fUpper === targetMap || fNorm === targetMapNorm);
+
+        if (isMatched) {
           return {
             ...f,
             tripStatus: (nextPernoite ? 'pernoitam' : 'retornam') as 'pernoitam' | 'retornam'
@@ -1028,10 +1055,11 @@ export default function EmpilhadorView({
 
     // 4. Update carregamentos
     const updatedCarregamentos = carregamentos.map(c => {
-      if (
-        (c.routeMap && c.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-        (c.plate && c.plate.toUpperCase() === vehicle.plate.toUpperCase())
-      ) {
+      const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
+      const cUpper = (c.routeMap || '').toUpperCase().trim();
+      const isMatched = targetMap && targetMap !== '—' && (cUpper === targetMap || cNorm === targetMapNorm);
+
+      if (isMatched) {
         return {
           ...c,
           isPernoite: nextPernoite
@@ -1052,14 +1080,20 @@ export default function EmpilhadorView({
 
   // HANDLER: SELECT PERNOITE DAY (D1, D2, D3, D4+)
   const handleSetPernoiteDay = (vehicle: ConnectedVehicle, day: 'D0' | 'D1' | 'D2' | 'D3' | 'D4+') => {
+    const targetMap = (vehicle.routeMap || '').toUpperCase().trim();
+    const targetMapNorm = normalizeMapCode(vehicle.routeMap).toUpperCase();
+    const targetId = vehicle.routeRef?.id || vehicle.id;
+
     // 1. Update importedRoutes
     let updatedRoutes = importedRoutes;
     if (importedRoutes.length > 0) {
       updatedRoutes = importedRoutes.map(r => {
-        if (
-          (r.routeMap && r.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-          (r.plate && r.plate.toUpperCase() === vehicle.plate.toUpperCase())
-        ) {
+        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+        const rUpper = (r.routeMap || '').toUpperCase().trim();
+        const isMatched = (targetId && (r.id === targetId || `route_${r.id}` === targetId)) ||
+          (targetMap && targetMap !== '—' && (rUpper === targetMap || rNorm === targetMapNorm));
+
+        if (isMatched) {
           return {
             ...r,
             isPernoite: true,
@@ -1076,10 +1110,12 @@ export default function EmpilhadorView({
     let updatedAudits = audits;
     if (audits.length > 0) {
       updatedAudits = audits.map(a => {
-        if (
-          (a.routeMap && a.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-          (a.plate && a.plate.toUpperCase() === vehicle.plate.toUpperCase())
-        ) {
+        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
+        const aUpper = (a.routeMap || '').toUpperCase().trim();
+        const isMatched = (targetMap && targetMap !== '—' && (aUpper === targetMap || aNorm === targetMapNorm)) ||
+          (targetId && a.id === targetId);
+
+        if (isMatched) {
           return {
             ...a,
             isPernoite: true,
@@ -1094,10 +1130,11 @@ export default function EmpilhadorView({
 
     // 3. Update carregamentos
     const updatedCarregamentos = carregamentos.map(c => {
-      if (
-        (c.routeMap && c.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-        (c.plate && c.plate.toUpperCase() === vehicle.plate.toUpperCase())
-      ) {
+      const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
+      const cUpper = (c.routeMap || '').toUpperCase().trim();
+      const isMatched = targetMap && targetMap !== '—' && (cUpper === targetMap || cNorm === targetMapNorm);
+
+      if (isMatched) {
         return {
           ...c,
           isPernoite: true,
@@ -1120,15 +1157,20 @@ export default function EmpilhadorView({
   // HANDLER: REOPEN UNLOADING (Move back from Descarregados to Pendentes)
   const handleReopenUnloading = (vehicle: ConnectedVehicle) => {
     const nextStatus = vehicle.unloadingStartTime ? 'EM_DESCARGA' : 'AGUARDANDO_DESCARGA';
+    const targetMap = (vehicle.routeMap || '').toUpperCase().trim();
+    const targetMapNorm = normalizeMapCode(vehicle.routeMap).toUpperCase();
+    const targetId = vehicle.routeRef?.id || vehicle.id;
 
     // 1. Update importedRoutes
     let updatedRoutes = importedRoutes;
     if (importedRoutes.length > 0) {
       updatedRoutes = importedRoutes.map(r => {
-        if (
-          (r.routeMap && r.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-          (r.plate && r.plate.toUpperCase() === vehicle.plate.toUpperCase())
-        ) {
+        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+        const rUpper = (r.routeMap || '').toUpperCase().trim();
+        const isMatched = (targetId && (r.id === targetId || `route_${r.id}` === targetId)) ||
+          (targetMap && targetMap !== '—' && (rUpper === targetMap || rNorm === targetMapNorm));
+
+        if (isMatched) {
           return {
             ...r,
             descarregamentoStatus: nextStatus as any,
@@ -1145,10 +1187,12 @@ export default function EmpilhadorView({
     let updatedAudits = audits;
     if (audits.length > 0) {
       updatedAudits = audits.map(a => {
-        if (
-          (a.routeMap && a.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-          (a.plate && a.plate.toUpperCase() === vehicle.plate.toUpperCase())
-        ) {
+        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
+        const aUpper = (a.routeMap || '').toUpperCase().trim();
+        const isMatched = (targetMap && targetMap !== '—' && (aUpper === targetMap || aNorm === targetMapNorm)) ||
+          (targetId && a.id === targetId);
+
+        if (isMatched) {
           return {
             ...a,
             descarregamentoStatus: nextStatus as any,
@@ -1162,10 +1206,11 @@ export default function EmpilhadorView({
     }
 
     // 3. Update carregamentos
-    const existingProc = carregamentos.find(c => 
-      (c.routeMap && c.routeMap.toUpperCase() === vehicle.routeMap.toUpperCase()) ||
-      (c.plate && c.plate.toUpperCase() === vehicle.plate.toUpperCase())
-    );
+    const existingProc = carregamentos.find(c => {
+      const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
+      const cUpper = (c.routeMap || '').toUpperCase().trim();
+      return targetMap && targetMap !== '—' && (cUpper === targetMap || cNorm === targetMapNorm);
+    });
 
     let updatedCarregamentos = carregamentos;
     if (existingProc) {
@@ -1267,14 +1312,20 @@ export default function EmpilhadorView({
       ? 'PERNOITE' 
       : (endIso ? 'DESCARREGADO' : (startIso ? 'EM_DESCARGA' : 'AGUARDANDO_DESCARGA'));
 
+    const targetMap = (selectedVehicle.routeMap || '').toUpperCase().trim();
+    const targetMapNorm = normalizeMapCode(selectedVehicle.routeMap).toUpperCase();
+    const targetId = selectedVehicle.routeRef?.id || selectedVehicle.id;
+
     // Update routes
     let updatedRoutes = importedRoutes;
     if (importedRoutes.length > 0) {
       updatedRoutes = importedRoutes.map(r => {
-        if (
-          (r.routeMap && r.routeMap.toUpperCase() === selectedVehicle.routeMap.toUpperCase()) ||
-          (r.plate && r.plate.toUpperCase() === selectedVehicle.plate.toUpperCase())
-        ) {
+        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+        const rUpper = (r.routeMap || '').toUpperCase().trim();
+        const isMatched = (targetId && (r.id === targetId || `route_${r.id}` === targetId)) ||
+          (targetMap && targetMap !== '—' && (rUpper === targetMap || rNorm === targetMapNorm));
+
+        if (isMatched) {
           return {
             ...r,
             dock: editDock,
@@ -1295,10 +1346,12 @@ export default function EmpilhadorView({
     let updatedAudits = audits;
     if (audits.length > 0) {
       updatedAudits = audits.map(a => {
-        if (
-          (a.routeMap && a.routeMap.toUpperCase() === selectedVehicle.routeMap.toUpperCase()) ||
-          (a.plate && a.plate.toUpperCase() === selectedVehicle.plate.toUpperCase())
-        ) {
+        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
+        const aUpper = (a.routeMap || '').toUpperCase().trim();
+        const isMatched = (targetMap && targetMap !== '—' && (aUpper === targetMap || aNorm === targetMapNorm)) ||
+          (targetId && a.id === targetId);
+
+        if (isMatched) {
           return {
             ...a,
             dock: editDock,
@@ -1317,10 +1370,11 @@ export default function EmpilhadorView({
 
     // Update carregamentos
     const updatedCarreg = carregamentos.map(c => {
-      if (
-        (c.routeMap && c.routeMap.toUpperCase() === selectedVehicle.routeMap.toUpperCase()) ||
-        (c.plate && c.plate.toUpperCase() === selectedVehicle.plate.toUpperCase())
-      ) {
+      const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
+      const cUpper = (c.routeMap || '').toUpperCase().trim();
+      const isMatched = targetMap && targetMap !== '—' && (cUpper === targetMap || cNorm === targetMapNorm);
+
+      if (isMatched) {
         return {
           ...c,
           dock: editDock,
