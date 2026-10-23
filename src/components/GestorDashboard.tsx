@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, UserRole, ImportedRoute, Vale, CarregamentoProcess, Empilhador } from '../types';
+import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, UserRole, ImportedRoute, Vale, CarregamentoProcess, Empilhador, isExemptAsset, getAssetUnitCost } from '../types';
 import { BarChart3, Users, Truck, ShoppingBag, Plus, Trash2, Shield, Clock, Landmark, Percent, CheckCircle2, AlertTriangle, RefreshCw, Eye, Search, Landmark as BankIcon, HardDrive, Camera, FileSpreadsheet, Sparkles, Check, FileCheck, CircleAlert, Edit, FileText, ZoomIn, ZoomOut, ArrowRight, UploadCloud, XCircle, Folder, Copy, SlidersHorizontal, TrendingUp, Box, Layers, Calendar, Database, Cloud, PlusCircle, X, BookOpen, FileCode, Download, ChevronRight, Award, Trophy, Timer, ChevronDown, ChevronUp } from 'lucide-react';
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { DEFAULT_USERS, DEFAULT_PRODUCTS, DEFAULT_DRIVERS, DEFAULT_VEHICLES, deduplicateUsersComprehensive, normalizePersonName, normalizeUserLogin } from '../data';
@@ -1358,7 +1358,8 @@ export default function GestorDashboard({
           };
         }
 
-        const aCost = Number(asset.cost) || 0;
+        const isExempt = isExemptAsset(asset.assetId, asset.assetName);
+        const aCost = isExempt ? 0 : getAssetUnitCost(asset.assetId, asset.assetName, asset.cost);
         if (diff < 0) {
           const absDiff = Math.abs(diff);
           totalMissingCost += absDiff * aCost;
@@ -1542,10 +1543,7 @@ export default function GestorDashboard({
         return phys > (item.fiscalQty ?? 0);
       });
       const hasAssetSurplus = (audit.assets || []).some(asset => {
-        const idLower = (asset.assetId || '').toLowerCase();
-        const nameUpper = (asset.assetName || '').toUpperCase();
-        const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
-        if (isChapatex) return false;
+        if (isExemptAsset(asset.assetId, asset.assetName)) return false;
         const phys = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
         return phys > (asset.fiscalQty ?? 0);
       });
@@ -1554,10 +1552,7 @@ export default function GestorDashboard({
         return phys < (item.fiscalQty ?? 0);
       });
       const hasAssetDeficit = (audit.assets || []).some(asset => {
-        const idLower = (asset.assetId || '').toLowerCase();
-        const nameUpper = (asset.assetName || '').toUpperCase();
-        const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
-        if (isChapatex) return false;
+        if (isExemptAsset(asset.assetId, asset.assetName)) return false;
         const phys = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
         return phys < (asset.fiscalQty ?? 0);
       });
@@ -1679,14 +1674,20 @@ export default function GestorDashboard({
     });
 
     audit.assets.forEach(asset => {
+      const isExempt = isExemptAsset(asset.assetId, asset.assetName);
       const physical = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
       const fiscal = asset.fiscalQty ?? 0;
       const diff = physical - fiscal;
       if (diff < 0) {
-        missingQty += Math.abs(diff);
-        financialLoss += Math.abs(diff) * asset.cost;
+        if (!isExempt) {
+          missingQty += Math.abs(diff);
+          const unitCost = getAssetUnitCost(asset.assetId, asset.assetName, asset.cost);
+          financialLoss += Math.abs(diff) * unitCost;
+        }
       } else if (diff > 0) {
-        surplusQty += diff;
+        if (!isExempt) {
+          surplusQty += diff;
+        }
       }
     });
 
@@ -3151,10 +3152,7 @@ export default function GestorDashboard({
               });
 
               const hasAssetSurplus = (audit.assets || []).some(asset => {
-                const idLower = (asset.assetId || '').toLowerCase();
-                const nameUpper = (asset.assetName || '').toUpperCase();
-                const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
-                if (isChapatex) return false; // Chapatex não gera sobra para envio
+                if (isExemptAsset(asset.assetId, asset.assetName)) return false;
 
                 const phys = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
                 return phys > (asset.fiscalQty ?? 0);
@@ -7870,10 +7868,7 @@ export default function GestorDashboard({
                         });
 
                         const hasAssetSurplus = (audit.assets || []).some(asset => {
-                          const idLower = (asset.assetId || '').toLowerCase();
-                          const nameUpper = (asset.assetName || '').toUpperCase();
-                          const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
-                          if (isChapatex) return false; // Chapatex não gera sobra para envio
+                          if (isExemptAsset(asset.assetId, asset.assetName)) return false;
 
                           const phys = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
                           return phys > (asset.fiscalQty ?? 0);
@@ -7918,10 +7913,7 @@ export default function GestorDashboard({
                               return phys > (i.fiscalQty ?? 0);
                             });
                             const surplusAssets = audit.assets.filter(a => {
-                              const idLower = (a.assetId || '').toLowerCase();
-                              const nameUpper = (a.assetName || '').toUpperCase();
-                              const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
-                              if (isChapatex) return false;
+                              if (isExemptAsset(a.assetId, a.assetName)) return false;
 
                               const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
                               return phys > (a.fiscalQty ?? 0);
@@ -8207,10 +8199,7 @@ export default function GestorDashboard({
                         });
 
                         const hasAssetDeficit = (audit.assets || []).some(asset => {
-                          const idLower = (asset.assetId || '').toLowerCase();
-                          const nameUpper = (asset.assetName || '').toUpperCase();
-                          const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
-                          if (isChapatex) return false; // Chapatex não gera falta para envio/cobrança
+                          if (isExemptAsset(asset.assetId, asset.assetName)) return false;
 
                           const phys = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
                           return phys < (asset.fiscalQty ?? 0);
@@ -8240,10 +8229,7 @@ export default function GestorDashboard({
                               return phys < (i.fiscalQty ?? 0);
                             });
                             const missingAssets = audit.assets.filter(a => {
-                              const idLower = (a.assetId || '').toLowerCase();
-                              const nameUpper = (a.assetName || '').toUpperCase();
-                              const isChapatex = idLower === 'chapatex' || idLower === '899599' || nameUpper.includes('CHAPATEX');
-                              if (isChapatex) return false;
+                              if (isExemptAsset(a.assetId, a.assetName)) return false;
 
                               const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
                               return phys < (a.fiscalQty ?? 0);
@@ -8257,7 +8243,7 @@ export default function GestorDashboard({
                             });
                             missingAssets.forEach(a => {
                               const diff = (a.fiscalQty ?? 0) - (a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty);
-                              auditLoss += diff * (Number(a.cost) || 0);
+                              auditLoss += diff * getAssetUnitCost(a.assetId, a.assetName, a.cost);
                             });
 
                             return (

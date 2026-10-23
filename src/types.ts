@@ -314,6 +314,85 @@ export function getAssetCanonicalName(code: string): string {
   }
 }
 
+/**
+ * Checks if an asset is exempt from financial deduction / vale / cobrança.
+ * STRICT BUSINESS RULE: ONLY Chapatex and Pallet are exempt.
+ * All other active giro assets (Garrafeiras, Garrafas, Vasilhames, Caixas, etc.)
+ * MUST generate divergence and be included in vales if not covered by comodato or recolha.
+ */
+export function isExemptAsset(assetId?: string, assetName?: string): boolean {
+  const id = (assetId || '').toLowerCase().trim();
+  const name = (assetName || '').toUpperCase().trim();
+  const code = getAssetCode(assetId || '', assetName || '');
+
+  // NEVER exempt Garrafeiras, Garrafas, or specific packaging codes
+  if (
+    code === '899599' || // GARRAFEIRA 600ML
+    code === '188005' || // GARRAFEIRA 1L
+    code === '863059' || // GARRAFEIRA 300ML
+    code === '786238' || // GARRAFA VERDE 600ML (RET)
+    code === '27983' ||  // GARRAFA 600 ÂMBAR (RET)
+    code === '188006' || // GARRAFA 1L(RET)
+    code === '198214' || // GARRAFA 300ML (RET)
+    id === 'gf_600' ||
+    id === 'gf_1l' ||
+    id === 'gf_300' ||
+    id === 'g_600_v' ||
+    id === 'g_600_a' ||
+    id === 'g_1l' ||
+    id === 'g_300'
+  ) {
+    return false;
+  }
+
+  if (name.includes('GARRAFEIRA') || name.includes('GARRAFA') || name.includes('VASILHAME') || name.includes('CAIXA')) {
+    return false;
+  }
+
+  // ONLY Chapatex and Pallet/Palete are exempt
+  const isChapatex = id === 'chapatex' || id.includes('chapatex') || name.includes('CHAPATEX');
+  const isPallet = id === 'pal_pbr' || id.includes('palete') || id.includes('pallet') || name.includes('PALETE') || name.includes('PALLET') || name.includes('PBR');
+
+  return isChapatex || isPallet;
+}
+
+/**
+ * Returns the official unit cost of an active asset.
+ * If currentCost is set and > 0, returns currentCost.
+ * Otherwise returns the official catalogue price for the asset.
+ */
+export function getAssetUnitCost(assetId?: string, assetName?: string, currentCost?: number): number {
+  if (currentCost !== undefined && currentCost > 0) {
+    return currentCost;
+  }
+  const code = getAssetCode(assetId || '', assetName || '');
+  switch (code) {
+    case '188005': return 35.00; // GARRAFEIRA 1L
+    case '899599': return 31.16; // GARRAFEIRA 600ML
+    case '863059': return 25.00; // GARRAFEIRA 300ML
+    case '786238': return 2.50;  // GARRAFA VERDE 600ML (RET)
+    case '27983': return 2.20;   // GARRAFA 600 ÂMBAR (RET)
+    case '188006': return 3.50;  // GARRAFA 1L(RET)
+    case '198214': return 1.50;  // GARRAFA 300ML (RET)
+    default: break;
+  }
+
+  const idLower = (assetId || '').toLowerCase();
+  const nameUpper = (assetName || '').toUpperCase();
+  if (idLower === 'gf_1l' || nameUpper.includes('GARRAFEIRA 1L') || nameUpper.includes('GARRAFEIRA 1 LITRO')) return 35.00;
+  if (idLower === 'gf_600' || nameUpper.includes('GARRAFEIRA 600')) return 31.16;
+  if (idLower === 'gf_300' || nameUpper.includes('GARRAFEIRA 300')) return 25.00;
+  if (idLower === 'g_600_v' || nameUpper.includes('VERDE 600') || nameUpper.includes('600ML VERDE')) return 2.50;
+  if (idLower === 'g_600_a' || nameUpper.includes('ÂMBAR') || nameUpper.includes('AMBAR')) return 2.20;
+  if (idLower === 'g_1l' || nameUpper.includes('GARRAFA 1L')) return 3.50;
+  if (idLower === 'g_300' || nameUpper.includes('GARRAFA 300')) return 1.50;
+  if (idLower.includes('pal') || nameUpper.includes('PALETE') || nameUpper.includes('PALLET')) return 120.00;
+  if (idLower.includes('chapa') || nameUpper.includes('CHAPATEX')) return 18.00;
+
+  return 31.16;
+}
+
+
 export interface ValeCollaborator {
   id: string;
   name: string;

@@ -582,10 +582,10 @@ export default function App() {
     return list.filter(Boolean).map(r => {
       const normMap = normalizeMapCode(r.routeMap).toUpperCase();
       const isClosedByAudit = effectiveAudits.some(a => {
-        if (a.reopeningRequested || a.reopened || a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada' || a.status === 'em_aberto' || a.status === 'reconferencia') return false;
+        if (a.reopeningRequested || a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada' || a.status === 'em_aberto' || a.status === 'reconferencia') return false;
         const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
         const matches = aNorm === normMap || (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normMap));
-        const isCompleted = (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') && !a.reopened;
+        const isCompleted = (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') && !a.reopeningRequested;
         return matches && isCompleted;
       });
 
@@ -722,7 +722,8 @@ export default function App() {
     }
 
     if (db.empilhadores !== undefined && Array.isArray(db.empilhadores)) {
-      setEmpilhadores(cleanEmpilhadores(db.empilhadores));
+      const cleaned = cleanEmpilhadores(db.empilhadores);
+      setEmpilhadores(cleaned.length > 0 ? cleaned : DEFAULT_EMPILHADORES);
     }
 
     if (db.carregamentoProcesses !== undefined && Array.isArray(db.carregamentoProcesses)) {
