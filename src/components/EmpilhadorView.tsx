@@ -402,14 +402,14 @@ export default function EmpilhadorView({
       seenMapAndPlate.add(key);
 
       let descarregamentoStatus: ConnectedVehicle['descarregamentoStatus'] = 'AGUARDANDO_DESCARGA';
-      if (isPernoite) {
-        descarregamentoStatus = 'PERNOITE';
-      } else if (isUnloadedToday) {
+      if (isUnloadedToday || r.descarregamentoStatus === 'DESCARREGADO') {
         descarregamentoStatus = 'DESCARREGADO';
-      } else if (r.descarregamentoStatus) {
-        descarregamentoStatus = r.descarregamentoStatus;
-      } else if (r.unloadingStartTime || matchingAudit?.unloadingStartTime || matchingCarregamento?.status === 'EM_CARREGAMENTO') {
+      } else if (r.descarregamentoStatus === 'EM_DESCARGA' || r.unloadingStartTime || matchingAudit?.unloadingStartTime || matchingCarregamento?.status === 'EM_CARREGAMENTO') {
         descarregamentoStatus = 'EM_DESCARGA';
+      } else if (r.descarregamentoStatus && r.descarregamentoStatus !== 'AGUARDANDO_DESCARGA') {
+        descarregamentoStatus = r.descarregamentoStatus;
+      } else if (isPernoite) {
+        descarregamentoStatus = 'PERNOITE';
       }
 
       const startTime = r.unloadingStartTime || matchingAudit?.unloadingStartTime || matchingCarregamento?.startedAt;
@@ -524,10 +524,15 @@ export default function EmpilhadorView({
         });
 
         let descarregamentoStatus: ConnectedVehicle['descarregamentoStatus'] = 'AGUARDANDO_DESCARGA';
-        if (a.isPernoite) descarregamentoStatus = 'PERNOITE';
-        else if (isUnloadedToday) descarregamentoStatus = 'DESCARREGADO';
-        else if (a.descarregamentoStatus) descarregamentoStatus = a.descarregamentoStatus;
-        else if (a.unloadingStartTime) descarregamentoStatus = 'EM_DESCARGA';
+        if (isUnloadedToday || a.descarregamentoStatus === 'DESCARREGADO') {
+          descarregamentoStatus = 'DESCARREGADO';
+        } else if (a.descarregamentoStatus === 'EM_DESCARGA' || a.unloadingStartTime || matchingCarregamento?.status === 'EM_CARREGAMENTO') {
+          descarregamentoStatus = 'EM_DESCARGA';
+        } else if (a.descarregamentoStatus && a.descarregamentoStatus !== 'AGUARDANDO_DESCARGA') {
+          descarregamentoStatus = a.descarregamentoStatus;
+        } else if (a.isPernoite) {
+          descarregamentoStatus = 'PERNOITE';
+        }
 
         const startTime = a.unloadingStartTime || matchingCarregamento?.startedAt;
         const endTime = a.unloadingEndTime || matchingCarregamento?.completedAt;
@@ -757,7 +762,7 @@ export default function EmpilhadorView({
             dock: dockToUse,
             empilhadorId: opId,
             empilhadorName: opName,
-            isPernoite: false,
+            isPernoite: r.isPernoite ?? checklistVehicle.isPernoite ?? false,
             totalPallets: checklistPallets,
             unloadingNote: note,
             unloadingChecklist: checklistData
@@ -786,7 +791,7 @@ export default function EmpilhadorView({
             dock: dockToUse,
             empilhadorId: opId,
             empilhadorName: opName,
-            isPernoite: false,
+            isPernoite: a.isPernoite ?? checklistVehicle.isPernoite ?? false,
             totalPallets: checklistPallets,
             unloadingNote: note,
             unloadingChecklist: checklistData
@@ -817,7 +822,7 @@ export default function EmpilhadorView({
             empilhadorId: opId,
             empilhadorName: opName,
             forkliftCode: currentOperator?.forkliftCode || 'EMP-01',
-            isPernoite: false,
+            isPernoite: c.isPernoite ?? checklistVehicle.isPernoite ?? false,
             totalPallets: checklistPallets,
             unloadingNote: note,
             unloadingChecklist: checklistData
@@ -846,7 +851,7 @@ export default function EmpilhadorView({
         loadedPallets: 0,
         createdAt: nowIso,
         startedAt: startTimeIso,
-        isPernoite: false,
+        isPernoite: checklistVehicle.isPernoite ?? false,
         unloadingStartTime: startTimeIso,
         unloadingNote: note,
         unloadingChecklist: checklistData
@@ -1175,7 +1180,7 @@ export default function EmpilhadorView({
             ...r,
             descarregamentoStatus: nextStatus as any,
             unloadingEndTime: undefined,
-            isPernoite: false
+            isPernoite: r.isPernoite ?? vehicle.isPernoite ?? false
           };
         }
         return r;
@@ -1197,7 +1202,7 @@ export default function EmpilhadorView({
             ...a,
             descarregamentoStatus: nextStatus as any,
             unloadingEndTime: undefined,
-            isPernoite: false
+            isPernoite: a.isPernoite ?? vehicle.isPernoite ?? false
           };
         }
         return a;
@@ -1221,7 +1226,7 @@ export default function EmpilhadorView({
             status: 'EM_CARREGAMENTO' as const,
             completedAt: undefined,
             unloadingEndTime: undefined,
-            isPernoite: false
+            isPernoite: c.isPernoite ?? vehicle.isPernoite ?? false
           };
         }
         return c;

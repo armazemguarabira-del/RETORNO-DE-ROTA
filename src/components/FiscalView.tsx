@@ -3852,10 +3852,11 @@ export default function FiscalView({
 
         onSaveAudits(updatedAudits);
 
+        let updatedRoutes = importedRoutes;
         if (onSaveImportedRoutes && importedRoutes) {
           const targetNorm = normalizeMapCode(targetAudit.routeMap).toUpperCase();
           const targetUpper = targetAudit.routeMap.trim().toUpperCase();
-          const updatedRoutes = importedRoutes.map(r => {
+          updatedRoutes = importedRoutes.map(r => {
             const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
             const rUpper = r.routeMap.trim().toUpperCase();
             const isMatched = rNorm === targetNorm || rUpper === targetUpper ||
@@ -3870,6 +3871,14 @@ export default function FiscalView({
 
         if (onSaveAlerts) {
           onSaveAlerts(updatedAlerts);
+        }
+
+        if (isClientFirebaseActive()) {
+          saveDirectlyToFirestore({
+            audits: updatedAudits,
+            importedRoutes: updatedRoutes,
+            fiscalAlerts: updatedAlerts
+          }).catch(err => console.error("Error syncing reopened map to Firestore:", err));
         }
 
         const currentSelected = updatedAudits.find(a => a.id === auditId);
@@ -3934,6 +3943,13 @@ export default function FiscalView({
     onSaveAudits(updatedAudits);
     if (onSaveAlerts) {
       onSaveAlerts(updatedAlerts);
+    }
+
+    if (isClientFirebaseActive()) {
+      saveDirectlyToFirestore({
+        audits: updatedAudits,
+        fiscalAlerts: updatedAlerts
+      }).catch(err => console.error("Error syncing reopening request to Firestore:", err));
     }
 
     const currentSelected = updatedAudits.find(a => a.id === auditId);
