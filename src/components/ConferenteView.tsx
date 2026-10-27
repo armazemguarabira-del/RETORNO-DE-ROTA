@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, ReturnForecast, FiscalAlert, ImportedRoute, CarregamentoProcess, Empilhador, isTreatableAssetId, getAssetCode, getAssetCanonicalName } from '../types';
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { DEFAULT_ACTIVE_ASSETS } from '../data';
-import { isClientFirebaseActive, saveDirectlyToFirestore } from '../clientFirebase';
 import { 
   Play, ClipboardCheck, Search, Plus, Trash2, ArrowRight, AlertTriangle, 
   Clock, RefreshCw, UserCheck, Camera, Upload, Bell, CheckCircle2, 
@@ -913,12 +912,11 @@ export default function ConferenteView({
 
   const findMapInfo = (mCode: string) => {
     const mapUpper = mCode.trim().toUpperCase();
-    const mapNorm = normalizeMapCode(mCode).toUpperCase();
-    const openItem = openRoutesList.find(x => x.routeMap.toUpperCase() === mapUpper || normalizeMapCode(x.routeMap).toUpperCase() === mapNorm);
+    const openItem = openRoutesList.find(x => x.routeMap.toUpperCase() === mapUpper);
     if (openItem) {
       return { plate: openItem.plate, driverName: openItem.driverName, driverId: (openItem as any).driverId };
     }
-    const impItem = importedRoutes.find(x => x.routeMap.toUpperCase() === mapUpper || normalizeMapCode(x.routeMap).toUpperCase() === mapNorm);
+    const impItem = importedRoutes.find(x => x.routeMap.toUpperCase() === mapUpper);
     if (impItem) {
       return { 
         plate: impItem.plate, 
@@ -926,7 +924,7 @@ export default function ConferenteView({
         driverId: impItem.driverId 
       };
     }
-    const audItem = audits.find(a => a.routeMap.toUpperCase() === mapUpper || normalizeMapCode(a.routeMap).toUpperCase() === mapNorm);
+    const audItem = audits.find(a => a.routeMap.toUpperCase() === mapUpper);
     if (audItem) {
       return { plate: audItem.plate, driverName: getDriverName(audItem.driverId), driverId: audItem.driverId };
     }
@@ -1197,59 +1195,13 @@ export default function ConferenteView({
     }));
 
     const initialItems: AuditItem[] = [];
-    if (unifiedMaps && unifiedMaps.length > 0) {
-      const combinedItemsMap: { [key: string]: AuditItem } = {};
-      unifiedMaps.forEach(mapCode => {
-        const r = importedRoutes.find(route => 
-          route.routeMap.toUpperCase() === mapCode.toUpperCase() ||
-          normalizeMapCode(route.routeMap).toUpperCase() === normalizeMapCode(mapCode).toUpperCase()
-        );
-        if (r && r.items) {
-          r.items.forEach(item => {
-            const prod = products.find(p => p.code === item.productCode);
-            if (combinedItemsMap[item.productCode]) {
-              combinedItemsMap[item.productCode].fiscalQty = (combinedItemsMap[item.productCode].fiscalQty || 0) + item.qty;
-            } else {
-              combinedItemsMap[item.productCode] = {
-                productCode: item.productCode,
-                productDescription: item.productDescription || prod?.description || item.productCode,
-                cost: prod?.cost || 0,
-                physicalQty: 0,
-                fiscalQty: item.qty
-              };
-            }
-          });
-        }
-      });
-      initialItems.push(...Object.values(combinedItemsMap));
-    } else {
-      const matchingRoute = importedRoutes.find(r => 
-        r.routeMap.toUpperCase() === finalRouteMap ||
-        normalizeMapCode(r.routeMap).toUpperCase() === normalizeMapCode(finalRouteMap).toUpperCase()
-      );
-      if (matchingRoute && matchingRoute.items) {
-        matchingRoute.items.forEach(item => {
-          const prod = products.find(p => p.code === item.productCode);
-          initialItems.push({
-            productCode: item.productCode,
-            productDescription: item.productDescription || prod?.description || item.productCode,
-            cost: prod?.cost || 0,
-            physicalQty: 0,
-            fiscalQty: item.qty
-          });
-        });
-      }
-    }
 
     // Initialize and combine exchanges from unified maps if present
     let initialExchanges: AuditExchangeItem[] = [];
     if (unifiedMaps && unifiedMaps.length > 0) {
       const combinedExchangesMap: { [key: string]: AuditExchangeItem } = {};
       unifiedMaps.forEach(mapCode => {
-        const r = importedRoutes.find(route => 
-          route.routeMap.toUpperCase() === mapCode.toUpperCase() ||
-          normalizeMapCode(route.routeMap).toUpperCase() === normalizeMapCode(mapCode).toUpperCase()
-        );
+        const r = importedRoutes.find(route => route.routeMap.toUpperCase() === mapCode.toUpperCase());
         if (r && r.exchanges) {
           r.exchanges.forEach(ex => {
             const key = `${ex.productCode}_${ex.type}`;
@@ -1263,10 +1215,7 @@ export default function ConferenteView({
       });
       initialExchanges = Object.values(combinedExchangesMap);
     } else {
-      const matchingRoute = importedRoutes.find(r => 
-        r.routeMap.toUpperCase() === finalRouteMap ||
-        normalizeMapCode(r.routeMap).toUpperCase() === normalizeMapCode(finalRouteMap).toUpperCase()
-      );
+      const matchingRoute = importedRoutes.find(r => r.routeMap.toUpperCase() === finalRouteMap);
       if (matchingRoute && matchingRoute.exchanges) {
         initialExchanges = matchingRoute.exchanges;
       } else {
@@ -1373,15 +1322,6 @@ export default function ConferenteView({
         });
         onSaveImportedRoutes(updatedRoutes);
       }
-    }
-
-    if (isClientFirebaseActive()) {
-      saveDirectlyToFirestore({
-        audits: audits.some(a => a.id === sessionToActivate.id) 
-          ? audits.map(a => a.id === sessionToActivate.id ? sessionToActivate : a) 
-          : [sessionToActivate, ...audits],
-        importedRoutes: importedRoutes
-      }).catch(err => console.error("Error syncing new/unified audit session:", err));
     }
 
     setLoadedSessionTime(sessionToActivate.updatedAt || nowStr);
@@ -2338,22 +2278,17 @@ export default function ConferenteView({
         (matchingAudit as any).surplusFlowStatus === 'BAIXADO'
       );
       const isReopeningReq = matchingAudit?.reopeningRequested === true;
-      const isReopened = matchingAudit?.reopened === true;
-      const isSubmittedToFiscal = matchingAudit && (matchingAudit.status === 'conferido_fisico' || matchingAudit.status === 'recontagem_finalizada') && !isReopened;
-      const isClosed = (isRouteClosedInAudits(route.routeMap || '') || (route.status as string) === 'fechado' || isFinalizedInAudit) && !isReopeningReq && !isReopened;
-
-      const isReopenedMap = isReopened || route.status === 'em_analise' || isReopeningReq;
+      const isSubmittedToFiscal = matchingAudit && (matchingAudit.status === 'conferido_fisico' || matchingAudit.status === 'recontagem_finalizada');
+      const isClosed = (isRouteClosedInAudits(route.routeMap || '') || (route.status as string) === 'fechado' || isFinalizedInAudit) && !isReopeningReq;
 
       // Only include routes that are truly open/pending for physical count
-      if ((!isClosed && !isSubmittedToFiscal) || isReopenedMap) {
+      if ((!isClosed && !isSubmittedToFiscal && (route.status as string) !== 'em_analise') || isReopeningReq) {
         processedMaps.add(routeMapUpper);
         processedMaps.add(routeMapNorm);
         
         let effectiveStatus: string = route.status || 'pendente';
         if (isReopeningReq) {
           effectiveStatus = 'solicitado_reabertura';
-        } else if (isReopened) {
-          effectiveStatus = 'reaberto';
         } else if (matchingAudit?.status === 'reconferencia') {
           effectiveStatus = 'reconferir';
         } else if (matchingAudit?.status === 'em_aberto') {
@@ -2409,9 +2344,8 @@ export default function ConferenteView({
       const auditMapUpper = (audit.routeMap || '').toUpperCase();
       const auditMapNorm = normalizeMapCode(audit.routeMap || '').toUpperCase();
       const isReopeningReq = audit.reopeningRequested === true;
-      const isReopened = audit.reopened === true;
-      const isClosedAudit = ((audit.status as string) === 'fechado' || audit.status === 'finalizado_ok' || audit.status === 'finalizado_divergente' || (audit as any).pdfDownloaded === true || (audit as any).surplusFlowStatus === 'BAIXADO') && !isReopened;
-      const isAuditActive = (audit.status === 'em_aberto' || audit.status === 'reconferencia' || isReopened) && !isClosedAudit;
+      const isClosedAudit = (audit.status as string) === 'fechado' || audit.status === 'finalizado_ok' || audit.status === 'finalizado_divergente' || (audit as any).pdfDownloaded === true || (audit as any).surplusFlowStatus === 'BAIXADO';
+      const isAuditActive = (audit.status === 'em_aberto' || audit.status === 'reconferencia') && !isClosedAudit;
 
       if ((isReopeningReq || isAuditActive) && !processedMaps.has(auditMapUpper) && !processedMaps.has(auditMapNorm)) {
         processedMaps.add(auditMapUpper);
@@ -2420,8 +2354,6 @@ export default function ConferenteView({
         let effectiveStatus: string = audit.status;
         if (isReopeningReq) {
           effectiveStatus = 'solicitado_reabertura';
-        } else if (audit.reopened) {
-          effectiveStatus = 'reaberto';
         } else if (audit.status === 'reconferencia') {
           effectiveStatus = 'reconferir';
         } else if (audit.status === 'em_aberto') {

@@ -385,16 +385,11 @@ export default function EmpilhadorView({
 
       const isPernoite = !!(r.isPernoite || matchingAudit?.isPernoite || matchingCarregamento?.isPernoite);
 
-      const hasStartedUnloading = !!(
-        (r.unloadingStartTime && r.unloadingStartTime.trim()) ||
-        (matchingAudit?.unloadingStartTime && matchingAudit.unloadingStartTime.trim())
-      );
-
       // REGRA CRÍTICA 3: Filtrar rotas históricas de dias anteriores que não sejam pernoite
       const isRouteDateToday = (r.routeDate === todayStr) || (r.importedAt && r.importedAt.startsWith(todayStr));
       const isPastRoute = !!(r.routeDate && r.routeDate < todayStr);
 
-      if (isPastRoute && !isPernoite && !isReopeningReq && !hasStartedUnloading) {
+      if (isPastRoute && !isPernoite && !isReopeningReq) {
         return;
       }
 
