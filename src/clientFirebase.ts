@@ -641,6 +641,37 @@ export async function saveDocToFirestore(colName: string, item: any): Promise<bo
   }
 }
 
+export async function patchDocInFirestore(colName: string, docId: string, partialFields: any): Promise<boolean> {
+  const db = getClientFirestore();
+  if (!db || !docId || !partialFields) return false;
+  try {
+    const targetCol = COLLECTION_MAP[colName] || colName;
+    const docRef = doc(db, targetCol, docId);
+    const cleanFields = JSON.parse(JSON.stringify(partialFields));
+    await setDoc(docRef, cleanFields, { merge: true });
+
+    const colCache = getColCache(targetCol);
+    const existingCachedStr = colCache.get(docId);
+    if (existingCachedStr) {
+      try {
+        const existingObj = JSON.parse(existingCachedStr);
+        const mergedObj = { ...existingObj, ...cleanFields };
+        colCache.set(docId, canonicalJson(mergedObj));
+      } catch (e) {
+        colCache.set(docId, canonicalJson({ id: docId, ...cleanFields }));
+      }
+    } else {
+      colCache.set(docId, canonicalJson({ id: docId, ...cleanFields }));
+    }
+    return true;
+  } catch (err) {
+    console.warn(`[ClientFirebase] Erro ao atualizar documento parcial '${docId}' na coleção '${colName}':`, err);
+    if (isPermissionError(err)) checkPermissionError(err);
+    if (isQuotaError(err)) checkQuotaError(err);
+    return false;
+  }
+}
+
 export async function deleteDocFromFirestore(colName: string, docId: string): Promise<boolean> {
   const db = getClientFirestore();
   if (!db || !docId) return false;

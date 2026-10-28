@@ -153,6 +153,7 @@ export interface AuditSession {
   unloadingStartTime?: string;
   unloadingEndTime?: string;
   isPernoite?: boolean;
+  diasCiclo?: 'D0' | 'D1' | 'D2' | 'D3' | 'D4+';
   dock?: string;
   empilhadorId?: string;
   empilhadorName?: string;
@@ -258,6 +259,7 @@ export interface ImportedRoute {
   totalPallets?: number;
   loadedPallets?: number;
   vehicleType?: string;
+  diasCiclo?: 'D0' | 'D1' | 'D2' | 'D3' | 'D4+';
   unloadingNote?: string;
   unloadingChecklist?: {
     giro360: boolean;

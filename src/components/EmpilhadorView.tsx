@@ -65,7 +65,7 @@ import {
   List,
   Trophy
 } from 'lucide-react';
-import { isClientFirebaseActive, saveDirectlyToFirestore } from '../clientFirebase';
+import { isClientFirebaseActive, saveDirectlyToFirestore, patchDocInFirestore, saveDocToFirestore, deleteDocFromFirestore } from '../clientFirebase';
 
 export interface EmpilhadorViewProps {
   currentUser: User;
@@ -278,6 +278,51 @@ export default function EmpilhadorView({
     );
   }, [empilhadores, currentUser]);
 
+  // Helper to find target index in array matching by ID first, or map/date fallback (matching at most ONE item)
+  function findTargetIndex<T extends { id?: string; routeMap?: string; routeDate?: string; arrivalDate?: string }>(
+    list: T[],
+    targetId?: string,
+    targetMap?: string,
+    targetDate?: string
+  ): number {
+    if (!list || list.length === 0) return -1;
+
+    // 1. Match by exact ID if provided
+    if (targetId) {
+      const rawTargetId = targetId.startsWith('route_') ? targetId.substring(6) : (targetId.startsWith('audit_') ? targetId.substring(6) : targetId);
+      const idxById = list.findIndex(item => item.id === targetId || item.id === rawTargetId);
+      if (idxById !== -1) return idxById;
+    }
+
+    // 2. Fallback match by routeMap / normalizeMapCode (at most ONE record)
+    if (!targetMap || targetMap === '—') return -1;
+    const targetMapNorm = normalizeMapCode(targetMap).toUpperCase();
+    const targetMapUpper = targetMap.toUpperCase().trim();
+
+    let bestIndex = -1;
+    let bestScore = -1;
+
+    list.forEach((item, idx) => {
+      const itemMapNorm = normalizeMapCode(item.routeMap).toUpperCase();
+      const itemMapUpper = (item.routeMap || '').toUpperCase().trim();
+      const isMapMatch = (itemMapNorm && itemMapNorm === targetMapNorm) || (itemMapUpper && itemMapUpper === targetMapUpper);
+
+      if (isMapMatch) {
+        let score = 1;
+        const itemDate = item.routeDate || item.arrivalDate;
+        if (targetDate && itemDate && itemDate === targetDate) {
+          score += 2;
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          bestIndex = idx;
+        }
+      }
+    });
+
+    return bestIndex;
+  }
+
   const normalizeMapCode = (m?: string) => {
     if (!m) return '';
     return String(m).replace(/^0+/, '').trim();
@@ -389,11 +434,16 @@ export default function EmpilhadorView({
       const isRouteDateToday = (r.routeDate === todayStr) || (r.importedAt && r.importedAt.startsWith(todayStr));
       const isPastRoute = !!(r.routeDate && r.routeDate < todayStr);
 
-      if (isPastRoute && !isPernoite && !isReopeningReq) {
+      const isInProgress = r.descarregamentoStatus === 'EM_DESCARGA'
+        || !!(r.unloadingStartTime && r.unloadingStartTime.trim())
+        || !!(matchingAudit?.unloadingStartTime && matchingAudit.unloadingStartTime.trim())
+        || matchingAudit?.descarregamentoStatus === 'EM_DESCARGA';
+
+      if (isPastRoute && !isPernoite && !isReopeningReq && !isInProgress) {
         return;
       }
 
-      const isActiveInUnloading = isPernoite || isUnloadedToday || isRouteDateToday || (r.unloadingStartTime && r.unloadingStartTime.trim().length > 0) || r.descarregamentoStatus === 'EM_DESCARGA' || (!r.routeDate && !r.importedAt);
+      const isActiveInUnloading = isPernoite || isUnloadedToday || isRouteDateToday || isInProgress || (!r.routeDate && !r.importedAt);
 
       if (!isActiveInUnloading && !isReopeningReq) {
         return;
@@ -402,10 +452,10 @@ export default function EmpilhadorView({
       seenMapAndPlate.add(key);
 
       let descarregamentoStatus: ConnectedVehicle['descarregamentoStatus'] = 'AGUARDANDO_DESCARGA';
-      if (isPernoite) {
-        descarregamentoStatus = 'PERNOITE';
-      } else if (isUnloadedToday) {
+      if (isUnloadedToday) {
         descarregamentoStatus = 'DESCARREGADO';
+      } else if (isPernoite) {
+        descarregamentoStatus = 'PERNOITE';
       } else if (r.descarregamentoStatus) {
         descarregamentoStatus = r.descarregamentoStatus;
       } else if (r.unloadingStartTime || matchingAudit?.unloadingStartTime || matchingCarregamento?.status === 'EM_CARREGAMENTO') {
@@ -736,96 +786,78 @@ export default function EmpilhadorView({
       completedBy: opName
     };
 
-    const targetMap = (checklistVehicle.routeMap || '').toUpperCase().trim();
-    const targetMapNorm = normalizeMapCode(checklistVehicle.routeMap).toUpperCase();
-    const targetId = checklistVehicle.routeRef?.id || checklistVehicle.id;
+    const targetMap = checklistVehicle.routeMap;
+    const targetDate = checklistVehicle.routeDate;
+    const routeTargetId = checklistVehicle.routeRef?.id;
+    const auditTargetId = checklistVehicle.auditRef?.id;
+    const carregTargetId = checklistVehicle.carregamentoRef?.id;
 
-    // 1. Update importedRoutes strictly by map / id
+    // 1. Update importedRoutes
+    const routeIdx = findTargetIndex(importedRoutes, routeTargetId, targetMap, targetDate);
     let updatedRoutes = importedRoutes;
-    if (importedRoutes.length > 0) {
-      updatedRoutes = importedRoutes.map(r => {
-        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
-        const rUpper = (r.routeMap || '').toUpperCase().trim();
-        const isMatched = (targetId && (r.id === targetId || `route_${r.id}` === targetId)) ||
-          (targetMap && targetMap !== '—' && (rUpper === targetMap || rNorm === targetMapNorm));
-
-        if (isMatched) {
-          return {
-            ...r,
-            descarregamentoStatus: 'EM_DESCARGA' as const,
-            unloadingStartTime: startTimeIso,
-            dock: dockToUse,
-            empilhadorId: opId,
-            empilhadorName: opName,
-            isPernoite: false,
-            totalPallets: checklistPallets,
-            unloadingNote: note,
-            unloadingChecklist: checklistData
-          };
-        }
-        return r;
-      });
+    if (routeIdx !== -1) {
+      const targetRoute = importedRoutes[routeIdx];
+      const routePatch = {
+        descarregamentoStatus: 'EM_DESCARGA' as const,
+        unloadingStartTime: startTimeIso,
+        dock: dockToUse,
+        empilhadorId: opId,
+        empilhadorName: opName,
+        totalPallets: checklistPallets,
+        unloadingNote: note,
+        unloadingChecklist: checklistData
+      };
+      updatedRoutes = importedRoutes.map((r, i) => i === routeIdx ? { ...r, ...routePatch } : r);
       if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
+      if (isClientFirebaseActive() && targetRoute.id) {
+        patchDocInFirestore('importedRoutes', targetRoute.id, routePatch);
+      }
     }
 
-    // 2. Update audits strictly by map / id
+    // 2. Update audits
+    const auditIdx = findTargetIndex(audits, auditTargetId, targetMap, targetDate);
     let updatedAudits = audits;
-    if (audits.length > 0) {
-      const targetAuditId = checklistVehicle.auditRef?.id;
-      updatedAudits = audits.map(a => {
-        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
-        const aUpper = (a.routeMap || '').toUpperCase().trim();
-        const isMatched = (targetAuditId && a.id === targetAuditId) ||
-          (targetMap && targetMap !== '—' && (aUpper === targetMap || aNorm === targetMapNorm || (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === targetMapNorm || m.toUpperCase().trim() === targetMap))));
-
-        if (isMatched) {
-          return {
-            ...a,
-            descarregamentoStatus: 'EM_DESCARGA' as const,
-            unloadingStartTime: startTimeIso,
-            dock: dockToUse,
-            empilhadorId: opId,
-            empilhadorName: opName,
-            isPernoite: false,
-            totalPallets: checklistPallets,
-            unloadingNote: note,
-            unloadingChecklist: checklistData
-          };
-        }
-        return a;
-      });
+    if (auditIdx !== -1) {
+      const targetAudit = audits[auditIdx];
+      const auditPatch = {
+        descarregamentoStatus: 'EM_DESCARGA' as const,
+        unloadingStartTime: startTimeIso,
+        dock: dockToUse,
+        empilhadorId: opId,
+        empilhadorName: opName,
+        totalPallets: checklistPallets,
+        unloadingNote: note,
+        unloadingChecklist: checklistData
+      };
+      updatedAudits = audits.map((a, i) => i === auditIdx ? { ...a, ...auditPatch } : a);
       if (onSaveAudits) onSaveAudits(updatedAudits);
+      if (isClientFirebaseActive() && targetAudit.id) {
+        patchDocInFirestore('audits', targetAudit.id, auditPatch);
+      }
     }
 
-    // 3. Update or create CarregamentoProcess strictly by map
-    const existingProc = carregamentos.find(c => {
-      const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
-      const cUpper = (c.routeMap || '').toUpperCase().trim();
-      return targetMap && targetMap !== '—' && (cNorm === targetMapNorm || cUpper === targetMap);
-    });
-
+    // 3. Update or create CarregamentoProcess
+    const carregIdx = findTargetIndex(carregamentos, carregTargetId, targetMap, targetDate);
     let updatedCarregamentos = carregamentos;
-    if (existingProc) {
-      updatedCarregamentos = carregamentos.map(c => {
-        if (c.id === existingProc.id) {
-          return {
-            ...c,
-            status: 'EM_CARREGAMENTO' as const,
-            startedAt: startTimeIso,
-            unloadingStartTime: startTimeIso,
-            dock: dockToUse,
-            empilhadorId: opId,
-            empilhadorName: opName,
-            forkliftCode: currentOperator?.forkliftCode || 'EMP-01',
-            isPernoite: false,
-            totalPallets: checklistPallets,
-            unloadingNote: note,
-            unloadingChecklist: checklistData
-          };
-        }
-        return c;
-      });
+    if (carregIdx !== -1) {
+      const targetCarreg = carregamentos[carregIdx];
+      const carregPatch = {
+        status: 'EM_CARREGAMENTO' as const,
+        startedAt: startTimeIso,
+        unloadingStartTime: startTimeIso,
+        dock: dockToUse,
+        empilhadorId: opId,
+        empilhadorName: opName,
+        forkliftCode: currentOperator?.forkliftCode || 'EMP-01',
+        totalPallets: checklistPallets,
+        unloadingNote: note,
+        unloadingChecklist: checklistData
+      };
+      updatedCarregamentos = carregamentos.map((c, i) => i === carregIdx ? { ...c, ...carregPatch } : c);
       onSaveCarregamentos(updatedCarregamentos);
+      if (isClientFirebaseActive() && targetCarreg.id) {
+        patchDocInFirestore('carregamentoProcesses', targetCarreg.id, carregPatch);
+      }
     } else {
       const newProc: CarregamentoProcess = {
         id: `proc_descarrega_${Date.now()}`,
@@ -846,13 +878,16 @@ export default function EmpilhadorView({
         loadedPallets: 0,
         createdAt: nowIso,
         startedAt: startTimeIso,
-        isPernoite: false,
+        isPernoite: checklistVehicle.isPernoite || false,
         unloadingStartTime: startTimeIso,
         unloadingNote: note,
         unloadingChecklist: checklistData
       };
       updatedCarregamentos = [newProc, ...carregamentos];
       onSaveCarregamentos(updatedCarregamentos);
+      if (isClientFirebaseActive()) {
+        saveDocToFirestore('carregamentoProcesses', newProc);
+      }
     }
 
     // 4. Update Operator Status
@@ -870,15 +905,6 @@ export default function EmpilhadorView({
       onSaveEmpilhadores(updatedOps);
     }
 
-    // 5. Direct Firestore synchronization
-    if (isClientFirebaseActive()) {
-      saveDirectlyToFirestore({
-        importedRoutes: updatedRoutes,
-        audits: updatedAudits,
-        carregamentoProcesses: updatedCarregamentos
-      }).catch(err => console.error('Error syncing checklist start:', err));
-    }
-
     setShowChecklistModal(false);
     setChecklistVehicle(null);
   };
@@ -886,78 +912,64 @@ export default function EmpilhadorView({
   // HANDLER: FINALIZAR DESCARREGAMENTO
   const handleFinishDescarregamento = (vehicle: ConnectedVehicle) => {
     const nowIso = new Date().toISOString();
+    const targetRouteId = vehicle.routeRef?.id || (vehicle.id?.startsWith('route_') ? vehicle.id.replace('route_', '') : vehicle.id);
+    const targetAuditId = vehicle.auditRef?.id || (vehicle.id?.startsWith('audit_') ? vehicle.id.replace('audit_', '') : vehicle.id);
+    const targetCarregId = vehicle.carregamentoRef?.id;
+    const vehicleDate = vehicle.routeDate || (vehicle as any).arrivalDate || todayStr;
 
-    const targetMap = (vehicle.routeMap || '').toUpperCase().trim();
-    const targetMapNorm = normalizeMapCode(vehicle.routeMap).toUpperCase();
-    const targetId = vehicle.routeRef?.id || vehicle.id;
-
-    // 1. Update importedRoutes strictly by map / id
-    let updatedRoutes = importedRoutes;
-    if (importedRoutes.length > 0) {
-      updatedRoutes = importedRoutes.map(r => {
-        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
-        const rUpper = (r.routeMap || '').toUpperCase().trim();
-        const isMatched = (targetId && (r.id === targetId || `route_${r.id}` === targetId)) ||
-          (targetMap && targetMap !== '—' && (rUpper === targetMap || rNorm === targetMapNorm));
-
-        if (isMatched) {
-          return {
-            ...r,
-            descarregamentoStatus: 'DESCARREGADO' as const,
-            unloadingEndTime: nowIso,
-            loadedPallets: r.totalPallets || vehicle.totalPallets || 8
-          };
+    // 1. Update importedRoutes strictly by ID or single matched index
+    if (onSaveImportedRoutes && importedRoutes.length > 0) {
+      const idx = findTargetIndex(importedRoutes, targetRouteId, vehicle.routeMap, vehicleDate);
+      if (idx !== -1) {
+        const target = importedRoutes[idx];
+        const patch: Partial<ImportedRoute> = {
+          descarregamentoStatus: 'DESCARREGADO',
+          unloadingEndTime: nowIso,
+          loadedPallets: target.totalPallets || vehicle.totalPallets || 8
+        };
+        const updatedRoutes = importedRoutes.map((r, i) => i === idx ? { ...r, ...patch } : r);
+        onSaveImportedRoutes(updatedRoutes);
+        if (isClientFirebaseActive() && target.id) {
+          patchDocInFirestore('importedRoutes', target.id, patch);
         }
-        return r;
-      });
-      if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
+      }
     }
 
-    // 2. Update audits strictly by map / id
-    let updatedAudits = audits;
-    if (audits.length > 0) {
-      const targetAuditId = vehicle.auditRef?.id;
-      updatedAudits = audits.map(a => {
-        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
-        const aUpper = (a.routeMap || '').toUpperCase().trim();
-        const isMatched = (targetAuditId && a.id === targetAuditId) ||
-          (targetMap && targetMap !== '—' && (aUpper === targetMap || aNorm === targetMapNorm || (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === targetMapNorm || m.toUpperCase().trim() === targetMap))));
-
-        if (isMatched) {
-          return {
-            ...a,
-            descarregamentoStatus: 'DESCARREGADO' as const,
-            unloadingEndTime: nowIso,
-            loadedPallets: a.totalPallets || vehicle.totalPallets || 8
-          };
+    // 2. Update audits strictly by ID or single matched index
+    if (onSaveAudits && audits.length > 0) {
+      const idx = findTargetIndex(audits, targetAuditId, vehicle.routeMap, vehicleDate);
+      if (idx !== -1) {
+        const target = audits[idx];
+        const patch: Partial<AuditSession> = {
+          descarregamentoStatus: 'DESCARREGADO',
+          unloadingEndTime: nowIso,
+          loadedPallets: target.totalPallets || vehicle.totalPallets || 8
+        };
+        const updatedAudits = audits.map((a, i) => i === idx ? { ...a, ...patch } : a);
+        onSaveAudits(updatedAudits);
+        if (isClientFirebaseActive() && target.id) {
+          patchDocInFirestore('audits', target.id, patch);
         }
-        return a;
-      });
-      if (onSaveAudits) onSaveAudits(updatedAudits);
+      }
     }
 
-    // 3. Update carregamentos strictly by map
-    const existingProc = carregamentos.find(c => {
-      const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
-      const cUpper = (c.routeMap || '').toUpperCase().trim();
-      return targetMap && targetMap !== '—' && (cNorm === targetMapNorm || cUpper === targetMap);
-    });
-
-    let updatedCarregamentos = carregamentos;
-    if (existingProc) {
-      updatedCarregamentos = carregamentos.map(c => {
-        if (c.id === existingProc.id) {
-          return {
-            ...c,
-            status: 'CONCLUIDO' as const,
-            completedAt: nowIso,
-            loadedPallets: c.totalPallets,
-            unloadingEndTime: nowIso
-          };
+    // 3. Update carregamentos
+    if (carregamentos.length > 0) {
+      const idx = findTargetIndex(carregamentos, targetCarregId, vehicle.routeMap, vehicleDate);
+      if (idx !== -1) {
+        const target = carregamentos[idx];
+        const patch = {
+          status: 'CONCLUIDO' as const,
+          completedAt: nowIso,
+          loadedPallets: target.totalPallets || vehicle.totalPallets || 8,
+          unloadingEndTime: nowIso
+        };
+        const updatedCarregamentos = carregamentos.map((c, i) => i === idx ? { ...c, ...patch } : c);
+        onSaveCarregamentos(updatedCarregamentos);
+        if (isClientFirebaseActive() && target.id) {
+          patchDocInFirestore('carregamentoProcesses', target.id, patch);
         }
-        return c;
-      });
-      onSaveCarregamentos(updatedCarregamentos);
+      }
     }
 
     // 4. Update Operator status
@@ -975,68 +987,54 @@ export default function EmpilhadorView({
       });
       onSaveEmpilhadores(updatedOps);
     }
-
-    // 5. Sync Firestore
-    if (isClientFirebaseActive()) {
-      saveDirectlyToFirestore({
-        importedRoutes: updatedRoutes,
-        audits: updatedAudits,
-        carregamentoProcesses: updatedCarregamentos
-      }).catch(err => console.error('Error syncing finished unloading:', err));
-    }
   };
 
   // HANDLER: TOGGLE PERNOITE
   const handleTogglePernoite = (vehicle: ConnectedVehicle) => {
     const nextPernoite = !vehicle.isPernoite;
-    const targetMap = (vehicle.routeMap || '').toUpperCase().trim();
-    const targetMapNorm = normalizeMapCode(vehicle.routeMap).toUpperCase();
-    const targetId = vehicle.routeRef?.id || vehicle.id;
+    const targetRouteId = vehicle.routeRef?.id || (vehicle.id?.startsWith('route_') ? vehicle.id.replace('route_', '') : vehicle.id);
+    const targetAuditId = vehicle.auditRef?.id || (vehicle.id?.startsWith('audit_') ? vehicle.id.replace('audit_', '') : vehicle.id);
+    const targetCarregId = vehicle.carregamentoRef?.id;
+    const vehicleDate = vehicle.routeDate || (vehicle as any).arrivalDate || todayStr;
 
     // 1. Update importedRoutes
-    let updatedRoutes = importedRoutes;
-    if (importedRoutes.length > 0) {
-      updatedRoutes = importedRoutes.map(r => {
-        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
-        const rUpper = (r.routeMap || '').toUpperCase().trim();
-        const isMatched = (targetId && (r.id === targetId || `route_${r.id}` === targetId)) ||
-          (targetMap && targetMap !== '—' && (rUpper === targetMap || rNorm === targetMapNorm));
-
-        if (isMatched) {
-          return {
-            ...r,
-            isPernoite: nextPernoite,
-            descarregamentoStatus: (nextPernoite ? 'PERNOITE' : (r.unloadingEndTime ? 'DESCARREGADO' : 'AGUARDANDO_DESCARGA')) as any
-          };
+    if (onSaveImportedRoutes && importedRoutes.length > 0) {
+      const idx = findTargetIndex(importedRoutes, targetRouteId, vehicle.routeMap, vehicleDate);
+      if (idx !== -1) {
+        const target = importedRoutes[idx];
+        const patch: Partial<ImportedRoute> = {
+          isPernoite: nextPernoite,
+          descarregamentoStatus: (nextPernoite ? 'PERNOITE' : (target.unloadingEndTime ? 'DESCARREGADO' : (target.unloadingStartTime ? 'EM_DESCARGA' : 'AGUARDANDO_DESCARGA'))) as any
+        };
+        const updatedRoutes = importedRoutes.map((r, i) => i === idx ? { ...r, ...patch } : r);
+        onSaveImportedRoutes(updatedRoutes);
+        if (isClientFirebaseActive() && target.id) {
+          patchDocInFirestore('importedRoutes', target.id, patch);
         }
-        return r;
-      });
-      if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
+      }
     }
 
     // 2. Update audits
-    let updatedAudits = audits;
-    if (audits.length > 0) {
-      updatedAudits = audits.map(a => {
-        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
-        const aUpper = (a.routeMap || '').toUpperCase().trim();
-        const isMatched = (targetMap && targetMap !== '—' && (aUpper === targetMap || aNorm === targetMapNorm)) ||
-          (targetId && a.id === targetId);
-
-        if (isMatched) {
-          return {
-            ...a,
-            isPernoite: nextPernoite,
-            descarregamentoStatus: (nextPernoite ? 'PERNOITE' : (a.unloadingEndTime ? 'DESCARREGADO' : 'AGUARDANDO_DESCARGA')) as any
-          };
+    if (onSaveAudits && audits.length > 0) {
+      const idx = findTargetIndex(audits, targetAuditId, vehicle.routeMap, vehicleDate);
+      if (idx !== -1) {
+        const target = audits[idx];
+        const patch: Partial<AuditSession> = {
+          isPernoite: nextPernoite,
+          descarregamentoStatus: (nextPernoite ? 'PERNOITE' : (target.unloadingEndTime ? 'DESCARREGADO' : (target.unloadingStartTime ? 'EM_DESCARGA' : 'AGUARDANDO_DESCARGA'))) as any
+        };
+        const updatedAudits = audits.map((a, i) => i === idx ? { ...a, ...patch } : a);
+        onSaveAudits(updatedAudits);
+        if (isClientFirebaseActive() && target.id) {
+          patchDocInFirestore('audits', target.id, patch);
         }
-        return a;
-      });
-      if (onSaveAudits) onSaveAudits(updatedAudits);
+      }
     }
 
     // 3. Update forecasts
     if (onSaveForecasts && returnForecasts.length > 0) {
+      const targetMap = (vehicle.routeMap || '').toUpperCase().trim();
+      const targetMapNorm = normalizeMapCode(vehicle.routeMap).toUpperCase();
       const updatedForecasts = returnForecasts.map(f => {
         const fNorm = normalizeMapCode(f.routeMap).toUpperCase();
         const fUpper = (f.routeMap || '').toUpperCase().trim();
@@ -1054,187 +1052,139 @@ export default function EmpilhadorView({
     }
 
     // 4. Update carregamentos
-    const updatedCarregamentos = carregamentos.map(c => {
-      const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
-      const cUpper = (c.routeMap || '').toUpperCase().trim();
-      const isMatched = targetMap && targetMap !== '—' && (cUpper === targetMap || cNorm === targetMapNorm);
-
-      if (isMatched) {
-        return {
-          ...c,
-          isPernoite: nextPernoite
-        };
+    if (carregamentos.length > 0) {
+      const idx = findTargetIndex(carregamentos, targetCarregId, vehicle.routeMap, vehicleDate);
+      if (idx !== -1) {
+        const target = carregamentos[idx];
+        const patch = { isPernoite: nextPernoite };
+        const updatedCarregamentos = carregamentos.map((c, i) => i === idx ? { ...c, ...patch } : c);
+        onSaveCarregamentos(updatedCarregamentos);
+        if (isClientFirebaseActive() && target.id) {
+          patchDocInFirestore('carregamentoProcesses', target.id, patch);
+        }
       }
-      return c;
-    });
-    onSaveCarregamentos(updatedCarregamentos);
-
-    if (isClientFirebaseActive()) {
-      saveDirectlyToFirestore({
-        importedRoutes: updatedRoutes,
-        audits: updatedAudits,
-        carregamentoProcesses: updatedCarregamentos
-      }).catch(err => console.error('Error syncing pernoite:', err));
     }
   };
 
   // HANDLER: SELECT PERNOITE DAY (D1, D2, D3, D4+)
   const handleSetPernoiteDay = (vehicle: ConnectedVehicle, day: 'D0' | 'D1' | 'D2' | 'D3' | 'D4+') => {
-    const targetMap = (vehicle.routeMap || '').toUpperCase().trim();
-    const targetMapNorm = normalizeMapCode(vehicle.routeMap).toUpperCase();
-    const targetId = vehicle.routeRef?.id || vehicle.id;
+    const targetRouteId = vehicle.routeRef?.id || (vehicle.id?.startsWith('route_') ? vehicle.id.replace('route_', '') : vehicle.id);
+    const targetAuditId = vehicle.auditRef?.id || (vehicle.id?.startsWith('audit_') ? vehicle.id.replace('audit_', '') : vehicle.id);
+    const targetCarregId = vehicle.carregamentoRef?.id;
+    const vehicleDate = vehicle.routeDate || (vehicle as any).arrivalDate || todayStr;
 
     // 1. Update importedRoutes
-    let updatedRoutes = importedRoutes;
-    if (importedRoutes.length > 0) {
-      updatedRoutes = importedRoutes.map(r => {
-        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
-        const rUpper = (r.routeMap || '').toUpperCase().trim();
-        const isMatched = (targetId && (r.id === targetId || `route_${r.id}` === targetId)) ||
-          (targetMap && targetMap !== '—' && (rUpper === targetMap || rNorm === targetMapNorm));
-
-        if (isMatched) {
-          return {
-            ...r,
-            isPernoite: true,
-            diasCiclo: day as any,
-            descarregamentoStatus: 'PERNOITE' as const
-          };
+    if (onSaveImportedRoutes && importedRoutes.length > 0) {
+      const idx = findTargetIndex(importedRoutes, targetRouteId, vehicle.routeMap, vehicleDate);
+      if (idx !== -1) {
+        const target = importedRoutes[idx];
+        const patch: Partial<ImportedRoute> = {
+          isPernoite: true,
+          diasCiclo: day as any,
+          descarregamentoStatus: 'PERNOITE'
+        };
+        const updatedRoutes = importedRoutes.map((r, i) => i === idx ? { ...r, ...patch } : r);
+        onSaveImportedRoutes(updatedRoutes);
+        if (isClientFirebaseActive() && target.id) {
+          patchDocInFirestore('importedRoutes', target.id, patch);
         }
-        return r;
-      });
-      if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
+      }
     }
 
     // 2. Update audits
-    let updatedAudits = audits;
-    if (audits.length > 0) {
-      updatedAudits = audits.map(a => {
-        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
-        const aUpper = (a.routeMap || '').toUpperCase().trim();
-        const isMatched = (targetMap && targetMap !== '—' && (aUpper === targetMap || aNorm === targetMapNorm)) ||
-          (targetId && a.id === targetId);
-
-        if (isMatched) {
-          return {
-            ...a,
-            isPernoite: true,
-            diasCiclo: day as any,
-            descarregamentoStatus: 'PERNOITE' as const
-          };
+    if (onSaveAudits && audits.length > 0) {
+      const idx = findTargetIndex(audits, targetAuditId, vehicle.routeMap, vehicleDate);
+      if (idx !== -1) {
+        const target = audits[idx];
+        const patch: Partial<AuditSession> = {
+          isPernoite: true,
+          diasCiclo: day as any,
+          descarregamentoStatus: 'PERNOITE'
+        };
+        const updatedAudits = audits.map((a, i) => i === idx ? { ...a, ...patch } : a);
+        onSaveAudits(updatedAudits);
+        if (isClientFirebaseActive() && target.id) {
+          patchDocInFirestore('audits', target.id, patch);
         }
-        return a;
-      });
-      if (onSaveAudits) onSaveAudits(updatedAudits);
+      }
     }
 
     // 3. Update carregamentos
-    const updatedCarregamentos = carregamentos.map(c => {
-      const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
-      const cUpper = (c.routeMap || '').toUpperCase().trim();
-      const isMatched = targetMap && targetMap !== '—' && (cUpper === targetMap || cNorm === targetMapNorm);
-
-      if (isMatched) {
-        return {
-          ...c,
+    if (carregamentos.length > 0) {
+      const idx = findTargetIndex(carregamentos, targetCarregId, vehicle.routeMap, vehicleDate);
+      if (idx !== -1) {
+        const target = carregamentos[idx];
+        const patch = {
           isPernoite: true,
           diasCiclo: day as any
         };
+        const updatedCarregamentos = carregamentos.map((c, i) => i === idx ? { ...c, ...patch } : c);
+        onSaveCarregamentos(updatedCarregamentos);
+        if (isClientFirebaseActive() && target.id) {
+          patchDocInFirestore('carregamentoProcesses', target.id, patch);
+        }
       }
-      return c;
-    });
-    onSaveCarregamentos(updatedCarregamentos);
-
-    if (isClientFirebaseActive()) {
-      saveDirectlyToFirestore({
-        importedRoutes: updatedRoutes,
-        audits: updatedAudits,
-        carregamentoProcesses: updatedCarregamentos
-      }).catch(err => console.error('Error syncing pernoite day:', err));
     }
   };
 
   // HANDLER: REOPEN UNLOADING (Move back from Descarregados to Pendentes)
   const handleReopenUnloading = (vehicle: ConnectedVehicle) => {
     const nextStatus = vehicle.unloadingStartTime ? 'EM_DESCARGA' : 'AGUARDANDO_DESCARGA';
-    const targetMap = (vehicle.routeMap || '').toUpperCase().trim();
-    const targetMapNorm = normalizeMapCode(vehicle.routeMap).toUpperCase();
-    const targetId = vehicle.routeRef?.id || vehicle.id;
+    const targetRouteId = vehicle.routeRef?.id || (vehicle.id?.startsWith('route_') ? vehicle.id.replace('route_', '') : vehicle.id);
+    const targetAuditId = vehicle.auditRef?.id || (vehicle.id?.startsWith('audit_') ? vehicle.id.replace('audit_', '') : vehicle.id);
+    const targetCarregId = vehicle.carregamentoRef?.id;
+    const vehicleDate = vehicle.routeDate || (vehicle as any).arrivalDate || todayStr;
 
     // 1. Update importedRoutes
-    let updatedRoutes = importedRoutes;
-    if (importedRoutes.length > 0) {
-      updatedRoutes = importedRoutes.map(r => {
-        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
-        const rUpper = (r.routeMap || '').toUpperCase().trim();
-        const isMatched = (targetId && (r.id === targetId || `route_${r.id}` === targetId)) ||
-          (targetMap && targetMap !== '—' && (rUpper === targetMap || rNorm === targetMapNorm));
-
-        if (isMatched) {
-          return {
-            ...r,
-            descarregamentoStatus: nextStatus as any,
-            unloadingEndTime: undefined,
-            isPernoite: false
-          };
+    if (onSaveImportedRoutes && importedRoutes.length > 0) {
+      const idx = findTargetIndex(importedRoutes, targetRouteId, vehicle.routeMap, vehicleDate);
+      if (idx !== -1) {
+        const target = importedRoutes[idx];
+        const patch: Partial<ImportedRoute> = {
+          descarregamentoStatus: (target.isPernoite && !target.unloadingStartTime) ? 'PERNOITE' : nextStatus as any,
+          unloadingEndTime: ''
+        };
+        const updatedRoutes = importedRoutes.map((r, i) => i === idx ? { ...r, ...patch } : r);
+        onSaveImportedRoutes(updatedRoutes);
+        if (isClientFirebaseActive() && target.id) {
+          patchDocInFirestore('importedRoutes', target.id, patch);
         }
-        return r;
-      });
-      if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
+      }
     }
 
     // 2. Update audits
-    let updatedAudits = audits;
-    if (audits.length > 0) {
-      updatedAudits = audits.map(a => {
-        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
-        const aUpper = (a.routeMap || '').toUpperCase().trim();
-        const isMatched = (targetMap && targetMap !== '—' && (aUpper === targetMap || aNorm === targetMapNorm)) ||
-          (targetId && a.id === targetId);
-
-        if (isMatched) {
-          return {
-            ...a,
-            descarregamentoStatus: nextStatus as any,
-            unloadingEndTime: undefined,
-            isPernoite: false
-          };
+    if (onSaveAudits && audits.length > 0) {
+      const idx = findTargetIndex(audits, targetAuditId, vehicle.routeMap, vehicleDate);
+      if (idx !== -1) {
+        const target = audits[idx];
+        const patch: Partial<AuditSession> = {
+          descarregamentoStatus: (target.isPernoite && !target.unloadingStartTime) ? 'PERNOITE' : nextStatus as any,
+          unloadingEndTime: ''
+        };
+        const updatedAudits = audits.map((a, i) => i === idx ? { ...a, ...patch } : a);
+        onSaveAudits(updatedAudits);
+        if (isClientFirebaseActive() && target.id) {
+          patchDocInFirestore('audits', target.id, patch);
         }
-        return a;
-      });
-      if (onSaveAudits) onSaveAudits(updatedAudits);
+      }
     }
 
     // 3. Update carregamentos
-    const existingProc = carregamentos.find(c => {
-      const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
-      const cUpper = (c.routeMap || '').toUpperCase().trim();
-      return targetMap && targetMap !== '—' && (cUpper === targetMap || cNorm === targetMapNorm);
-    });
-
-    let updatedCarregamentos = carregamentos;
-    if (existingProc) {
-      updatedCarregamentos = carregamentos.map(c => {
-        if (c.id === existingProc.id) {
-          return {
-            ...c,
-            status: 'EM_CARREGAMENTO' as const,
-            completedAt: undefined,
-            unloadingEndTime: undefined,
-            isPernoite: false
-          };
+    if (carregamentos.length > 0) {
+      const idx = findTargetIndex(carregamentos, targetCarregId, vehicle.routeMap, vehicleDate);
+      if (idx !== -1) {
+        const target = carregamentos[idx];
+        const patch = {
+          status: 'EM_CARREGAMENTO' as const,
+          completedAt: '',
+          unloadingEndTime: ''
+        };
+        const updatedCarregamentos = carregamentos.map((c, i) => i === idx ? { ...c, ...patch } : c);
+        onSaveCarregamentos(updatedCarregamentos);
+        if (isClientFirebaseActive() && target.id) {
+          patchDocInFirestore('carregamentoProcesses', target.id, patch);
         }
-        return c;
-      });
-      onSaveCarregamentos(updatedCarregamentos);
-    }
-
-    if (isClientFirebaseActive()) {
-      saveDirectlyToFirestore({
-        importedRoutes: updatedRoutes,
-        audits: updatedAudits,
-        carregamentoProcesses: updatedCarregamentos
-      }).catch(err => console.error('Error syncing reopened unloading:', err));
+      }
     }
   };
 
@@ -1312,71 +1262,61 @@ export default function EmpilhadorView({
       ? 'PERNOITE' 
       : (endIso ? 'DESCARREGADO' : (startIso ? 'EM_DESCARGA' : 'AGUARDANDO_DESCARGA'));
 
-    const targetMap = (selectedVehicle.routeMap || '').toUpperCase().trim();
-    const targetMapNorm = normalizeMapCode(selectedVehicle.routeMap).toUpperCase();
-    const targetId = selectedVehicle.routeRef?.id || selectedVehicle.id;
+    const targetRouteId = selectedVehicle.routeRef?.id || (selectedVehicle.id?.startsWith('route_') ? selectedVehicle.id.replace('route_', '') : selectedVehicle.id);
+    const targetAuditId = selectedVehicle.auditRef?.id || (selectedVehicle.id?.startsWith('audit_') ? selectedVehicle.id.replace('audit_', '') : selectedVehicle.id);
+    const targetCarregId = selectedVehicle.carregamentoRef?.id;
+    const vehicleDate = selectedVehicle.routeDate || (selectedVehicle as any).arrivalDate || todayStr;
 
     // Update routes
-    let updatedRoutes = importedRoutes;
-    if (importedRoutes.length > 0) {
-      updatedRoutes = importedRoutes.map(r => {
-        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
-        const rUpper = (r.routeMap || '').toUpperCase().trim();
-        const isMatched = (targetId && (r.id === targetId || `route_${r.id}` === targetId)) ||
-          (targetMap && targetMap !== '—' && (rUpper === targetMap || rNorm === targetMapNorm));
-
-        if (isMatched) {
-          return {
-            ...r,
-            dock: editDock,
-            empilhadorId: editEmpilhadorId || undefined,
-            empilhadorName: op?.name,
-            unloadingStartTime: startIso,
-            unloadingEndTime: endIso,
-            isPernoite: editIsPernoite,
-            descarregamentoStatus: statusVal
-          };
+    if (onSaveImportedRoutes && importedRoutes.length > 0) {
+      const idx = findTargetIndex(importedRoutes, targetRouteId, selectedVehicle.routeMap, vehicleDate);
+      if (idx !== -1) {
+        const target = importedRoutes[idx];
+        const patch: Partial<ImportedRoute> = {
+          dock: editDock,
+          empilhadorId: editEmpilhadorId || undefined,
+          empilhadorName: op?.name,
+          unloadingStartTime: startIso,
+          unloadingEndTime: endIso,
+          isPernoite: editIsPernoite,
+          descarregamentoStatus: statusVal
+        };
+        const updatedRoutes = importedRoutes.map((r, i) => i === idx ? { ...r, ...patch } : r);
+        onSaveImportedRoutes(updatedRoutes);
+        if (isClientFirebaseActive() && target.id) {
+          patchDocInFirestore('importedRoutes', target.id, patch);
         }
-        return r;
-      });
-      if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
+      }
     }
 
     // Update audits
-    let updatedAudits = audits;
-    if (audits.length > 0) {
-      updatedAudits = audits.map(a => {
-        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
-        const aUpper = (a.routeMap || '').toUpperCase().trim();
-        const isMatched = (targetMap && targetMap !== '—' && (aUpper === targetMap || aNorm === targetMapNorm)) ||
-          (targetId && a.id === targetId);
-
-        if (isMatched) {
-          return {
-            ...a,
-            dock: editDock,
-            empilhadorId: editEmpilhadorId || undefined,
-            empilhadorName: op?.name,
-            unloadingStartTime: startIso,
-            unloadingEndTime: endIso,
-            isPernoite: editIsPernoite,
-            descarregamentoStatus: statusVal
-          };
+    if (onSaveAudits && audits.length > 0) {
+      const idx = findTargetIndex(audits, targetAuditId, selectedVehicle.routeMap, vehicleDate);
+      if (idx !== -1) {
+        const target = audits[idx];
+        const patch: Partial<AuditSession> = {
+          dock: editDock,
+          empilhadorId: editEmpilhadorId || undefined,
+          empilhadorName: op?.name,
+          unloadingStartTime: startIso,
+          unloadingEndTime: endIso,
+          isPernoite: editIsPernoite,
+          descarregamentoStatus: statusVal
+        };
+        const updatedAudits = audits.map((a, i) => i === idx ? { ...a, ...patch } : a);
+        onSaveAudits(updatedAudits);
+        if (isClientFirebaseActive() && target.id) {
+          patchDocInFirestore('audits', target.id, patch);
         }
-        return a;
-      });
-      if (onSaveAudits) onSaveAudits(updatedAudits);
+      }
     }
 
     // Update carregamentos
-    const updatedCarreg = carregamentos.map(c => {
-      const cNorm = normalizeMapCode(c.routeMap || '').toUpperCase();
-      const cUpper = (c.routeMap || '').toUpperCase().trim();
-      const isMatched = targetMap && targetMap !== '—' && (cUpper === targetMap || cNorm === targetMapNorm);
-
-      if (isMatched) {
-        return {
-          ...c,
+    if (carregamentos.length > 0) {
+      const idx = findTargetIndex(carregamentos, targetCarregId, selectedVehicle.routeMap, vehicleDate);
+      if (idx !== -1) {
+        const target = carregamentos[idx];
+        const patch = {
           dock: editDock,
           empilhadorId: editEmpilhadorId || undefined,
           empilhadorName: op?.name,
@@ -1386,17 +1326,12 @@ export default function EmpilhadorView({
           isPernoite: editIsPernoite,
           status: (endIso ? 'CONCLUIDO' : (startIso ? 'EM_CARREGAMENTO' : 'FILA')) as any
         };
+        const updatedCarreg = carregamentos.map((c, i) => i === idx ? { ...c, ...patch } : c);
+        onSaveCarregamentos(updatedCarreg);
+        if (isClientFirebaseActive() && target.id) {
+          patchDocInFirestore('carregamentoProcesses', target.id, patch);
+        }
       }
-      return c;
-    });
-    onSaveCarregamentos(updatedCarreg);
-
-    if (isClientFirebaseActive()) {
-      saveDirectlyToFirestore({
-        importedRoutes: updatedRoutes,
-        audits: updatedAudits,
-        carregamentoProcesses: updatedCarreg
-      }).catch(err => console.error('Error updating times:', err));
     }
 
     setShowEditTimeModal(false);
@@ -1409,48 +1344,42 @@ export default function EmpilhadorView({
       "❌ Excluir da Fila de Descarregamento?",
       `Tem certeza que deseja remover o mapa ${vehicle.routeMap} (${vehicle.plate}) da fila de descarregamento? Todos os registros vinculados de descarregamento e rota serão excluídos.`,
       () => {
-        const vMapNorm = normalizeMapCode(vehicle.routeMap).toUpperCase();
-        const vMapUpper = (vehicle.routeMap || '').toUpperCase().trim();
-        const vPlateUpper = (vehicle.plate || '').toUpperCase().trim();
+        const targetRouteId = vehicle.routeRef?.id || (vehicle.id?.startsWith('route_') ? vehicle.id.replace('route_', '') : vehicle.id);
+        const targetAuditId = vehicle.auditRef?.id || (vehicle.id?.startsWith('audit_') ? vehicle.id.replace('audit_', '') : vehicle.id);
+        const targetCarregId = vehicle.carregamentoRef?.id;
+        const vehicleDate = vehicle.routeDate || (vehicle as any).arrivalDate || todayStr;
 
         // 1. Remove from importedRoutes
-        const updatedRoutes = (importedRoutes || []).filter(r => {
-          const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
-          const rUpper = (r.routeMap || '').toUpperCase().trim();
-          const rPlate = (r.plate || '').toUpperCase().trim();
-          const isMatch = (vMapNorm && rNorm === vMapNorm) || (vMapUpper && rUpper === vMapUpper) || (vPlateUpper && rPlate === vPlateUpper);
-          return !isMatch;
-        });
-        if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
+        const rIdx = findTargetIndex(importedRoutes, targetRouteId, vehicle.routeMap, vehicleDate);
+        if (rIdx !== -1) {
+          const target = importedRoutes[rIdx];
+          const updatedRoutes = importedRoutes.filter((_, i) => i !== rIdx);
+          if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
+          if (isClientFirebaseActive() && target.id) {
+            deleteDocFromFirestore('importedRoutes', target.id);
+          }
+        }
 
         // 2. Remove from audits
-        const updatedAudits = (audits || []).filter(a => {
-          const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
-          const aUpper = (a.routeMap || '').toUpperCase().trim();
-          const aPlate = (a.plate || '').toUpperCase().trim();
-          const isMatch = (vMapNorm && aNorm === vMapNorm) || (vMapUpper && aUpper === vMapUpper) || (vPlateUpper && aPlate === vPlateUpper);
-          return !isMatch;
-        });
-        if (onSaveAudits) onSaveAudits(updatedAudits);
+        const aIdx = findTargetIndex(audits, targetAuditId, vehicle.routeMap, vehicleDate);
+        if (aIdx !== -1) {
+          const target = audits[aIdx];
+          const updatedAudits = audits.filter((_, i) => i !== aIdx);
+          if (onSaveAudits) onSaveAudits(updatedAudits);
+          if (isClientFirebaseActive() && target.id) {
+            deleteDocFromFirestore('audits', target.id);
+          }
+        }
 
         // 3. Remove from carregamentos
-        const updatedCarreg = (carregamentos || []).filter(c => {
-          const cNorm = normalizeMapCode(c.routeMap).toUpperCase();
-          const cUpper = (c.routeMap || '').toUpperCase().trim();
-          const cPlate = (c.plate || '').toUpperCase().trim();
-          const isMatch = (vMapNorm && cNorm === vMapNorm) || (vMapUpper && cUpper === vMapUpper) || (vPlateUpper && cPlate === vPlateUpper);
-          return !isMatch;
-        });
-        if (onSaveCarregamentos) onSaveCarregamentos(updatedCarreg);
-
-        // 4. Direct Firestore sync
-        if (isClientFirebaseActive()) {
-          saveDirectlyToFirestore({
-            importedRoutes: updatedRoutes,
-            audits: updatedAudits,
-            carregamentos: updatedCarreg,
-            carregamentoProcesses: updatedCarreg
-          }).catch(err => console.error('Error deleting from queue:', err));
+        const cIdx = findTargetIndex(carregamentos, targetCarregId, vehicle.routeMap, vehicleDate);
+        if (cIdx !== -1) {
+          const target = carregamentos[cIdx];
+          const updatedCarreg = carregamentos.filter((_, i) => i !== cIdx);
+          if (onSaveCarregamentos) onSaveCarregamentos(updatedCarreg);
+          if (isClientFirebaseActive() && target.id) {
+            deleteDocFromFirestore('carregamentoProcesses', target.id);
+          }
         }
 
         alert(`Mapa ${vehicle.routeMap} (${vehicle.plate}) removido da fila de descarregamento com sucesso.`);
