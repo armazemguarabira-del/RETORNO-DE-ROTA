@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, ReturnForecast, FiscalAlert, ImportedRoute, Vale, Empilhador, CarregamentoProcess, ControleSobraItem, FiveSEntry, SafetyReport, BlitzRefugoEntry, ZeroBreakDeclaration } from './types';
+import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, ReturnForecast, FiscalAlert, ImportedRoute, Vale, Empilhador, CarregamentoProcess, ControleSobraItem, FiveSEntry, SafetyReport, BlitzRefugoEntry, ZeroBreakDeclaration, normalizeMapCode } from './types';
 import { DEFAULT_PRODUCTS, DEFAULT_USERS, DEFAULT_EMPILHADORES, DEFAULT_CARREGAMENTOS, deduplicateUsersComprehensive } from './data';
 import { ImageDB } from './imageDb';
 import { isClientFirebaseActive, fetchDirectlyFromFirestore, saveDirectlyToFirestore, deleteDocFromFirestore, subscribeToFirestore, getClientAuthError, getIsFirestoreQuotaExceeded, setFirestoreQuotaExceeded, getActiveFirebaseConfig, switchActiveFirebaseConfig, forceReconnect } from './clientFirebase';
@@ -512,12 +512,6 @@ export default function App() {
     return Array.from(productMap.values());
   };
 
-  // Normalization helper for Map Codes (strips leading zeros)
-  const normalizeMapCode = (mapCode: any): string => {
-    if (mapCode === undefined || mapCode === null) return '';
-    return String(mapCode).trim().replace(/^0+/, '');
-  };
-
   const cleanAudits = (list: AuditSession[]): AuditSession[] => {
     if (!list || !Array.isArray(list)) return [];
     return list.filter(Boolean).map(a => ({
@@ -581,12 +575,18 @@ export default function App() {
     const effectiveAudits = currentAudits || audits || [];
     return list.filter(Boolean).map(r => {
       const normMap = normalizeMapCode(r.routeMap).toUpperCase();
-      const isClosedByAudit = effectiveAudits.some(a => {
+      const isActiveWorkingStatus = r.status === 'conferindo' || r.status === 'em_analise' || r.status === 'reconferir';
+      const isClosedByAudit = !isActiveWorkingStatus && effectiveAudits.some(a => {
         if (a.reopeningRequested || a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada' || a.status === 'em_aberto' || a.status === 'reconferencia') return false;
         const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
         const matches = aNorm === normMap || (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normMap));
+        if (!matches) return false;
+        if (r.routeDate) {
+          const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+          if (aDate && aDate !== r.routeDate) return false;
+        }
         const isCompleted = (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') && !a.reopeningRequested;
-        return matches && isCompleted;
+        return isCompleted;
       });
 
       return {
@@ -711,9 +711,10 @@ export default function App() {
       setActiveAssets(db.activeAssets);
     }
 
+    let activeAudits = audits;
     if (db.audits !== undefined && Array.isArray(db.audits)) {
-      const cleaned = cleanAudits(db.audits);
-      setAudits(cleaned);
+      activeAudits = cleanAudits(db.audits);
+      setAudits(activeAudits);
     }
 
     if (db.vales !== undefined && Array.isArray(db.vales)) {
@@ -767,7 +768,7 @@ export default function App() {
 
     // Smart Merge Imported Routes
     if (db.importedRoutes !== undefined) {
-      const remoteCleaned = cleanImportedRoutes(db.importedRoutes);
+      const remoteCleaned = cleanImportedRoutes(db.importedRoutes, activeAudits);
       setImportedRoutes(remoteCleaned);
     }
 

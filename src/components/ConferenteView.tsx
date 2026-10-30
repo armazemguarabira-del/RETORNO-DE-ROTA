@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, ReturnForecast, FiscalAlert, ImportedRoute, CarregamentoProcess, Empilhador, isTreatableAssetId, getAssetCode, getAssetCanonicalName } from '../types';
+import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, ReturnForecast, FiscalAlert, ImportedRoute, CarregamentoProcess, Empilhador, isTreatableAssetId, getAssetCode, getAssetCanonicalName, normalizeMapCode } from '../types';
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { DEFAULT_ACTIVE_ASSETS } from '../data';
 import { 
@@ -22,16 +22,6 @@ const formatDateToDiaMesAno = (dateStr?: string) => {
   } catch (e) {
     return dateStr;
   }
-};
-
-const normalizeMapCode = (mapCode: any): string => {
-  if (!mapCode) return '';
-  const str = String(mapCode).trim();
-  const digitsOnly = str.replace(/\D/g, '');
-  if (digitsOnly.length > 0) {
-    return String(parseInt(digitsOnly, 10));
-  }
-  return str;
 };
 
 const DEFAULT_EMP_LIST = [
@@ -1201,7 +1191,11 @@ export default function ConferenteView({
     if (unifiedMaps && unifiedMaps.length > 0) {
       const combinedExchangesMap: { [key: string]: AuditExchangeItem } = {};
       unifiedMaps.forEach(mapCode => {
-        const r = importedRoutes.find(route => route.routeMap.toUpperCase() === mapCode.toUpperCase());
+        const normM = normalizeMapCode(mapCode).toUpperCase();
+        const r = importedRoutes.find(route => {
+          const normR = normalizeMapCode(route.routeMap).toUpperCase();
+          return normR === normM || route.routeMap.toUpperCase().trim() === mapCode.toUpperCase().trim();
+        });
         if (r && r.exchanges) {
           r.exchanges.forEach(ex => {
             const key = `${ex.productCode}_${ex.type}`;
@@ -1215,7 +1209,11 @@ export default function ConferenteView({
       });
       initialExchanges = Object.values(combinedExchangesMap);
     } else {
-      const matchingRoute = importedRoutes.find(r => r.routeMap.toUpperCase() === finalRouteMap);
+      const matchingRoute = importedRoutes.find(r => {
+        const normR = normalizeMapCode(r.routeMap).toUpperCase();
+        const normFinal = normalizeMapCode(finalRouteMap).toUpperCase();
+        return normR === normFinal || r.routeMap.toUpperCase().trim() === finalRouteMap;
+      });
       if (matchingRoute && matchingRoute.exchanges) {
         initialExchanges = matchingRoute.exchanges;
       } else {
@@ -1228,8 +1226,39 @@ export default function ConferenteView({
 
     if (existingMemberAudit) {
       const isReconferencia = existingMemberAudit.status === 'reconferencia';
+
+      // Merge items from any other member audits that are being combined so physical counts are preserved
+      const otherMemberAudits = audits.filter(a =>
+        a.id !== existingMemberAudit.id &&
+        (a.status === 'em_aberto' || a.status === 'reconferencia') &&
+        (targetMapsUpper.includes(a.routeMap.toUpperCase()) ||
+         (a.unifiedMaps && a.unifiedMaps.some(um => targetMapsUpper.includes(um.toUpperCase()))))
+      );
+
+      let mergedItems = [...(existingMemberAudit.items || [])];
+      otherMemberAudits.forEach(oma => {
+        (oma.items || []).forEach(oItem => {
+          const exIdx = mergedItems.findIndex(i => i.productCode === oItem.productCode);
+          if (exIdx >= 0) {
+            mergedItems[exIdx] = {
+              ...mergedItems[exIdx],
+              physicalQty: (mergedItems[exIdx].physicalQty || 0) + (oItem.physicalQty || 0),
+              fiscalQty: (mergedItems[exIdx].fiscalQty !== undefined || oItem.fiscalQty !== undefined)
+                ? (mergedItems[exIdx].fiscalQty || 0) + (oItem.fiscalQty || 0)
+                : undefined,
+              rePhysicalQty: (mergedItems[exIdx].rePhysicalQty !== undefined || oItem.rePhysicalQty !== undefined)
+                ? (mergedItems[exIdx].rePhysicalQty || 0) + (oItem.rePhysicalQty || 0)
+                : undefined
+            };
+          } else {
+            mergedItems.push({ ...oItem });
+          }
+        });
+      });
+
       sessionToActivate = {
         ...existingMemberAudit,
+        items: mergedItems,
         routeMap: finalRouteMap,
         unifiedMaps: unifiedMaps,
         plate: finalPlate.toUpperCase(),
@@ -1255,7 +1284,8 @@ export default function ConferenteView({
         .filter(a => {
           if (a.id === sessionToActivate.id) return true;
           const isOtherMemberDuplicate = (a.status === 'em_aberto' || a.status === 'reconferencia') &&
-            targetMapsUpper.includes(a.routeMap.toUpperCase());
+            (targetMapsUpper.includes(a.routeMap.toUpperCase()) ||
+             (a.unifiedMaps && a.unifiedMaps.some(um => targetMapsUpper.includes(um.toUpperCase()))));
           return !isOtherMemberDuplicate;
         });
 
@@ -1263,8 +1293,10 @@ export default function ConferenteView({
 
       if (onSaveImportedRoutes) {
         const updatedRoutes = importedRoutes.map(r => {
+          const normR = normalizeMapCode(r.routeMap).toUpperCase();
           const isMatched = r.routeMap.toUpperCase() === finalRouteMap ||
-            (targetMapsUpper.includes(r.routeMap.toUpperCase()));
+            targetMapsUpper.includes(r.routeMap.toUpperCase()) ||
+            targetMapsUpper.includes(normR);
           if (isMatched) {
             const newStatus: 'reconferir' | 'conferindo' = isReconferencia ? 'reconferir' : 'conferindo';
             return { ...r, status: newStatus };
@@ -1382,10 +1414,22 @@ export default function ConferenteView({
         updatedItems[existingIndex].physicalQty = qty;
       }
     } else {
-      // Find matching imported route for the current session to pull expected fiscal quantity
-      const matchingRoute = importedRoutes.find(r => r.routeMap.toUpperCase() === activeSession.routeMap.toUpperCase());
-      const matchingRouteItem = matchingRoute?.items?.find(item => item.productCode === selectedProductCode);
-      const fiscalQty = matchingRouteItem ? matchingRouteItem.qty : 0;
+      // Find matching imported route(s) for the current session to pull expected fiscal quantity
+      const memberMaps = (activeSession.unifiedMaps && activeSession.unifiedMaps.length > 0)
+        ? activeSession.unifiedMaps.map(m => normalizeMapCode(m).toUpperCase())
+        : (activeSession.routeMap ? activeSession.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase()) : []);
+      const sessionMapNorm = normalizeMapCode(activeSession.routeMap).toUpperCase();
+
+      const matchingRoutes = (importedRoutes || []).filter(r => {
+        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+        return rNorm === sessionMapNorm || memberMaps.includes(rNorm);
+      });
+
+      let fiscalQty = 0;
+      matchingRoutes.forEach(r => {
+        const item = r.items?.find(it => it.productCode === selectedProductCode);
+        if (item) fiscalQty += Number(item.qty || 0);
+      });
 
       const newItem: AuditItem = {
         productCode: prod.code,
@@ -1703,8 +1747,15 @@ export default function ConferenteView({
     if (!activeSession) return;
     
     // Check if the route is a blitz route and hasn't had the blitz data entered yet
-    const matchingRoute = importedRoutes.find(r => r.routeMap.toUpperCase() === activeSession.routeMap.trim().toUpperCase());
-    if (matchingRoute?.isBlitz && activeSession.blitzBoxesChecked === undefined) {
+    const sessionMapNorm = normalizeMapCode(activeSession.routeMap).toUpperCase();
+    const memberMaps = (activeSession.unifiedMaps && activeSession.unifiedMaps.length > 0)
+      ? activeSession.unifiedMaps.map(m => normalizeMapCode(m).toUpperCase())
+      : activeSession.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase());
+    const matchingRoute = (importedRoutes || []).find(r => {
+      const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+      return (rNorm === sessionMapNorm || memberMaps.includes(rNorm)) && r.isBlitz;
+    });
+    if (matchingRoute && activeSession.blitzBoxesChecked === undefined) {
       setBlitzBoxesChecked(10);
       setBlitzAvariasFound(0);
       setShowBlitzModal(true);
@@ -2471,12 +2522,16 @@ export default function ConferenteView({
 
   const getMergedFinalItems = (session: AuditSession): AuditItem[] => {
     const routeItems: { [key: string]: AuditItem } = {};
-    const mapsToSearch = session.unifiedMaps && session.unifiedMaps.length > 0
+    const mapsToSearch = (session.unifiedMaps && session.unifiedMaps.length > 0)
       ? session.unifiedMaps
-      : [session.routeMap];
+      : (session.routeMap ? session.routeMap.split('+').map(s => s.trim()) : []);
 
     mapsToSearch.forEach(mapCode => {
-      const r = importedRoutes.find(route => route.routeMap.toUpperCase() === mapCode.toUpperCase());
+      const normMap = normalizeMapCode(mapCode).toUpperCase();
+      const r = importedRoutes.find(route => {
+        const normR = normalizeMapCode(route.routeMap).toUpperCase();
+        return normR === normMap || route.routeMap.toUpperCase() === mapCode.toUpperCase();
+      });
       if (r && r.items) {
         r.items.forEach(item => {
           const prod = products.find(p => p.code === item.productCode);
@@ -3535,7 +3590,14 @@ export default function ConferenteView({
 
           {/* Blitz de Refugo warning banner */}
           {(() => {
-            const matchingRoute = importedRoutes.find(r => r.routeMap.toUpperCase() === activeSession.routeMap.toUpperCase());
+            const sessionMapNorm = normalizeMapCode(activeSession.routeMap).toUpperCase();
+            const memberMaps = (activeSession.unifiedMaps && activeSession.unifiedMaps.length > 0)
+              ? activeSession.unifiedMaps.map(m => normalizeMapCode(m).toUpperCase())
+              : activeSession.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase());
+            const matchingRoute = (importedRoutes || []).find(r => {
+              const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+              return (rNorm === sessionMapNorm || memberMaps.includes(rNorm)) && r.isBlitz;
+            });
             if (matchingRoute?.isBlitz) {
               return (
                 <div className="bg-red-50 border-l-4 border-red-600 rounded-xl p-5 text-slate-950 shadow-xs space-y-4">

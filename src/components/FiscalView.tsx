@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, FiscalAlert, ImportedRoute, RouteObservation, Vale, ValeCollaborator, ReturnForecast, getAssetCode, getAssetCanonicalName, isExemptAsset, getAssetUnitCost } from '../types';
+import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, FiscalAlert, ImportedRoute, RouteObservation, Vale, ValeCollaborator, ReturnForecast, getAssetCode, getAssetCanonicalName, isExemptAsset, getAssetUnitCost, normalizeMapCode } from '../types';
 import { isClientFirebaseActive, saveDirectlyToFirestore } from '../clientFirebase';
 import { ClipboardCheck, ShieldAlert, ArrowRight, ShieldCheck, CheckSquare, AlertTriangle, HelpCircle, Search, RefreshCw, XCircle, DollarSign, Calendar, SlidersHorizontal, FileSpreadsheet, Clock, CheckCircle2, Shield, Trash2, Camera, BarChart3, AlertCircle, Plus, PlusCircle, FileText, Check, Award, Eye, Calculator, Folder, Copy, X, ArrowUpCircle, ArrowDownCircle, Sparkles, FolderOpen, Download, FileCheck, PackageCheck, UserPlus, FileJson, Archive, Moon, Info, Edit3, Users } from 'lucide-react';
 import { ImageDB, PhotoRecord } from '../imageDb';
@@ -9,11 +9,6 @@ import { DEFAULT_USERS } from '../data';
 import { getSkuClosedPrice } from '../utils/prices';
 import { parseAndProcessFile, ProcessImportResult } from '../utils/excelImportHelper';
 import * as XLSX from 'xlsx';
-
-const normalizeMapCode = (mapCode: any): string => {
-  if (mapCode === undefined || mapCode === null) return '';
-  return String(mapCode).trim().replace(/^0+/, '');
-};
 
 function AuditPhotoViewer({ auditId }: { auditId: string }) {
   const [photos, setPhotos] = React.useState<PhotoRecord[]>([]);
@@ -867,7 +862,7 @@ export default function FiscalView({
   }, [activeSession]);
 
   // Helper to determine if a route is closed based on audits
-  const isRouteClosed = (routeMap: string) => {
+  const isRouteClosed = (routeMap: string, routeDate?: string) => {
     const norm = normalizeMapCode(routeMap).toUpperCase();
     const upper = routeMap.trim().toUpperCase();
     return audits.some(a => {
@@ -876,8 +871,16 @@ export default function FiscalView({
       const aUpper = a.routeMap.trim().toUpperCase();
       const isMatch = aNorm === norm || aUpper === upper ||
         (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === norm || m.trim().toUpperCase() === upper));
+      if (!isMatch) return false;
+
+      // If routeDate is specified, only match audits that share the same date
+      if (routeDate) {
+        const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+        if (aDate && aDate !== routeDate) return false;
+      }
+
       const isFinished = (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') && !a.reopeningRequested;
-      return isMatch && isFinished;
+      return isFinished;
     });
   };
 
@@ -2908,7 +2911,7 @@ export default function FiscalView({
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'ok' | 'divergentes' | 'reabertos'>('all');
 
-  // Pending for fiscal verification (filtering out maps that are already closed or downloaded)
+  // Pending for fiscal verification (active conferences awaiting reconciliation)
   const pendingAudits = audits.filter(a => {
     // If reopening was requested by fiscal/conferente/auxiliar, keep in pending so fiscal can re-reconcile
     if (a.reopeningRequested) return true;
@@ -2923,39 +2926,19 @@ export default function FiscalView({
     if (a.pdfDownloaded || a.surplusFlowStatus === 'BAIXADO') return false;
     if (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') return false;
 
-    // Must be in conferido_fisico or recontagem_finalizada
+    // Must be in conferido_fisico or recontagem_finalizada to be conciliated
     if (a.status !== 'conferido_fisico' && a.status !== 'recontagem_finalizada') return false;
-
-    // Check if matching route or another audit for this map is already closed/finalized
-    const normMap = normalizeMapCode(a.routeMap).toUpperCase();
-    const upperMap = a.routeMap.trim().toUpperCase();
-
-    // Check if importedRoute is already closed (only applies if audit is not actively in conferido_fisico/recontagem_finalizada)
-    const isRouteClosedInImports = importedRoutes.some(r => {
-      const normR = normalizeMapCode(r.routeMap).toUpperCase();
-      return (normR === normMap || r.routeMap.trim().toUpperCase() === upperMap) && r.status === 'fechado';
-    });
-    if (isRouteClosedInImports && !wasReopened) return false;
-
-    // Check if another audit session for the same map is already finished
-    const isAuditClosedInOthers = audits.some(other => {
-      if (other.id === a.id || other.reopeningRequested) return false;
-      const otherNorm = normalizeMapCode(other.routeMap).toUpperCase();
-      const isMapMatch = otherNorm === normMap || (other.unifiedMaps && other.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normMap));
-      const isFinished = (other.status === 'finalizado_ok' || other.status === 'finalizado_divergente') && !other.reopeningRequested;
-      return isMapMatch && isFinished;
-    });
-    if (isAuditClosedInOthers) return false;
 
     return true;
   });
 
-  // History audits (finished today or reopened)
+  // History audits (finished audits or reopened sessions)
   const historyAudits = audits.filter(a => 
     a.status === 'finalizado_ok' || 
     a.status === 'finalizado_divergente' ||
     a.reopened === true ||
-    a.history?.some(h => h.action.includes('Reabertura Aprovada') || h.action.includes('Reaberto') || h.action.includes('Mapa Reaberto'))
+    a.reopeningRequested === true ||
+    a.history?.some(h => h.action.includes('Reabertura Aprovada') || h.action.includes('Reaberto') || h.action.includes('Mapa Reaberto') || h.action.includes('Solicitação de Reabertura'))
   );
 
   // Unacknowledged baixas for financeiro (Aguardando Fechamento Promax)
@@ -4638,15 +4621,25 @@ export default function FiscalView({
     setRecSelectedProductCode(prod.code);
     setRecProductSearch(`[${prod.code}] ${prod.description}`);
     
-    // Look up default fiscal qty from the imported route map
+    // Look up default fiscal qty from the imported route map(s)
     if (activeSession) {
-      const matchingRoute = importedRoutes.find(r => r.routeMap.toUpperCase() === activeSession.routeMap.toUpperCase());
-      const matchingRouteItem = matchingRoute?.items?.find(item => item.productCode === prod.code);
-      if (matchingRouteItem) {
-        setRecProductFiscalQtyToAdd(matchingRouteItem.qty);
-      } else {
-        setRecProductFiscalQtyToAdd(0);
-      }
+      const sessionMapNorm = normalizeMapCode(activeSession.routeMap).toUpperCase();
+      const memberMaps = (activeSession.unifiedMaps && activeSession.unifiedMaps.length > 0)
+        ? activeSession.unifiedMaps.map(m => normalizeMapCode(m).toUpperCase())
+        : (activeSession.routeMap ? activeSession.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase()) : []);
+
+      const matchingRoutes = (importedRoutes || []).filter(r => {
+        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+        return rNorm === sessionMapNorm || memberMaps.includes(rNorm);
+      });
+
+      let sumFiscal = 0;
+      matchingRoutes.forEach(r => {
+        const item = r.items?.find(it => it.productCode === prod.code);
+        if (item) sumFiscal += Number(item.qty || 0);
+      });
+
+      setRecProductFiscalQtyToAdd(sumFiscal);
     }
     setRecProductQtyToAdd(0); // Physical qty default 0
   };
@@ -5023,19 +5016,25 @@ export default function FiscalView({
 
   // Filtering history lists
   const filteredHistory = historyAudits.filter(a => {
-    const q = (searchTerm || '').toLowerCase();
+    const q = (searchTerm || '').trim().toLowerCase();
     const matchesSearch = !q ||
       (a.routeMap || '').toLowerCase().includes(q) ||
+      normalizeMapCode(a.routeMap).toLowerCase().includes(q) ||
       (a.plate || '').toLowerCase().includes(q) ||
-      getDriverName(a.driverId).toLowerCase().includes(q);
+      getDriverName(a.driverId).toLowerCase().includes(q) ||
+      (a.tempDriverName || '').toLowerCase().includes(q) ||
+      (a.tempHelperName || '').toLowerCase().includes(q) ||
+      getDriverName(a.helperId).toLowerCase().includes(q) ||
+      (a.unifiedMaps && a.unifiedMaps.some(m => m.toLowerCase().includes(q) || normalizeMapCode(m).toLowerCase().includes(q)));
     
-    // Check date bounds if configured
+    // Check date bounds if configured (with fallback to routeDate, endTime, or startTime)
+    const auditDate = a.arrivalDate || a.routeDate || (a.endTime ? a.endTime.split('T')[0] : '') || (a.startTime ? a.startTime.split('T')[0] : '');
     let matchesDate = true;
-    if (historyStartDate) {
-      matchesDate = matchesDate && (a.arrivalDate >= historyStartDate);
+    if (historyStartDate && auditDate) {
+      matchesDate = matchesDate && (auditDate >= historyStartDate);
     }
-    if (historyEndDate) {
-      matchesDate = matchesDate && (a.arrivalDate <= historyEndDate);
+    if (historyEndDate && auditDate) {
+      matchesDate = matchesDate && (auditDate <= historyEndDate);
     }
 
     const matchesStatus = 
@@ -5043,7 +5042,14 @@ export default function FiscalView({
       (statusFilter === 'ok' && a.status === 'finalizado_ok') ||
       (statusFilter === 'divergentes' && a.status === 'finalizado_divergente') ||
       (statusFilter === 'reabertos' && (
-        a.history?.some(h => h.action.includes('Reabertura Aprovada') || h.action.includes('Reaberto'))
+        a.reopened === true ||
+        a.reopeningRequested === true ||
+        a.history?.some(h => 
+          h.action.includes('Reabertura Aprovada') || 
+          h.action.includes('Reaberto') ||
+          h.action.includes('Mapa Reaberto') ||
+          h.action.includes('Solicitação de Reabertura')
+        )
       ));
 
     return matchesSearch && matchesDate && matchesStatus;
@@ -7076,114 +7082,169 @@ export default function FiscalView({
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               
               {/* Column 1: Sendo Trabalhados / Em Aberto */}
-              <div className="bg-white rounded-xl shadow-xs border border-slate-200 p-5 space-y-4">
-                <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-                  <h3 className="font-sans font-bold text-slate-900 text-sm uppercase flex items-center space-x-1.5">
-                    <Clock className="h-4.5 w-4.5 text-amber-500" />
-                    <span>Sendo Trabalhados</span>
-                  </h3>
-                  <span className="bg-amber-100 text-amber-800 text-xxs font-extrabold px-2 py-0.5 rounded-full font-mono">
-                    {importedRoutes.filter(r => r.status !== 'fechado' && r.status !== 'em_analise' && !isRouteClosed(r.routeMap)).length} mapas
-                  </span>
-                </div>
+              {(() => {
+                const workingRoutes = importedRoutes.filter(r => r.status !== 'fechado' && r.status !== 'em_analise' && !isRouteClosed(r.routeMap, r.routeDate));
+                const standaloneActiveAudits = audits.filter(a => {
+                  if (a.status !== 'em_aberto' && a.status !== 'reconferencia') return false;
+                  if (a.pdfDownloaded || a.surplusFlowStatus === 'BAIXADO') return false;
+                  const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
+                  const isDirectlyInWorking = workingRoutes.some(r => normalizeMapCode(r.routeMap).toUpperCase() === aNorm);
+                  return !isDirectlyInWorking;
+                });
+                const totalWorkingCount = workingRoutes.length + standaloneActiveAudits.length;
 
-                <div className="space-y-3 max-h-[450px] overflow-y-auto pr-1">
-                  {importedRoutes.filter(r => r.status !== 'fechado' && r.status !== 'em_analise' && !isRouteClosed(r.routeMap)).length === 0 ? (
-                    <div className="text-center py-8 text-xxs italic text-slate-400 bg-slate-50 border border-dashed rounded-lg">
-                      Nenhum mapa sendo trabalhado.
+                return (
+                  <div className="bg-white rounded-xl shadow-xs border border-slate-200 p-5 space-y-4">
+                    <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+                      <h3 className="font-sans font-bold text-slate-900 text-sm uppercase flex items-center space-x-1.5">
+                        <Clock className="h-4.5 w-4.5 text-amber-500" />
+                        <span>Sendo Trabalhados</span>
+                      </h3>
+                      <span className="bg-amber-100 text-amber-800 text-xxs font-extrabold px-2 py-0.5 rounded-full font-mono">
+                        {totalWorkingCount} mapas
+                      </span>
                     </div>
-                  ) : (
-                    importedRoutes.filter(r => r.status !== 'fechado' && r.status !== 'em_analise' && !isRouteClosed(r.routeMap)).map(route => {
-                      const isPendente = route.status === 'pendente' || !route.status;
-                      const isConferindo = route.status === 'conferindo';
-                      const isEmAnalise = route.status === 'em_analise';
-                      const isReconferir = route.status === 'reconferir';
 
-                      let badgeColor = "bg-red-100 text-red-800 border-red-200";
-                      let statusText = "Pendente";
-                      if (isConferindo) {
-                        badgeColor = "bg-amber-100 text-amber-800 border-amber-200 animate-pulse";
-                        statusText = "Conferindo";
-                      } else if (isEmAnalise) {
-                        badgeColor = "bg-emerald-100 text-emerald-800 border-emerald-200";
-                        statusText = "Em Análise";
-                      } else if (isReconferir) {
-                        badgeColor = "bg-purple-100 text-purple-800 border-purple-200 animate-pulse";
-                        statusText = "Pedida Recontagem";
-                      }
-
-                      return (
-                        <div key={route.id} className={`p-3 rounded-xl border space-y-2 text-xxs transition-all ${
-                          route.isPernoite 
-                            ? 'bg-purple-50/70 border-purple-300 ring-1 ring-purple-200' 
-                            : 'bg-slate-50/60 border-slate-200'
-                        }`}>
-                          <div className="flex justify-between items-start">
-                            <div>
-                              <div className="flex items-center space-x-2">
-                                <span className="font-extrabold text-slate-900 font-sans block text-sm">{route.routeMap}</span>
-                                {route.isPernoite && (
-                                  <span className="bg-purple-100 text-purple-800 text-[8px] font-extrabold px-1.5 py-0.5 rounded border border-purple-300 flex items-center space-x-0.5">
-                                    <Moon className="h-2.5 w-2.5 text-purple-600 fill-purple-600" />
-                                    <span>PERNOITE</span>
-                                  </span>
-                                )}
-                              </div>
-                              <div className="space-y-0.5">
-                                <span className="font-mono text-[9px] text-slate-400 block">Placa: {route.plate}</span>
-                                <span className="text-[9px] text-slate-500 font-mono block">Data Rota: {route.routeDate ? new Date(route.routeDate + 'T00:00:00').toLocaleDateString('pt-BR') : 'N/A'}</span>
-                              </div>
-                            </div>
-                            <div className="flex items-center space-x-1.5">
-                              <span className={`text-[8px] font-bold uppercase px-1.5 py-0.5 rounded border ${badgeColor}`}>
-                                {statusText}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleTogglePernoite({ routeMap: route.routeMap, plate: route.plate, isPernoite: route.isPernoite });
-                                }}
-                                className={`text-[9px] font-bold px-2 py-0.5 rounded transition-all flex items-center space-x-1 cursor-pointer border ${
-                                  route.isPernoite
-                                    ? 'bg-purple-600 hover:bg-purple-700 text-white border-purple-700 shadow-xs'
-                                    : 'bg-white hover:bg-purple-50 text-slate-600 hover:text-purple-700 border-slate-200 hover:border-purple-300'
-                                }`}
-                                title={route.isPernoite ? "Desmarcar pernoite (veículo volta para o indicador normal)" : "Marcar veículo como Pernoite"}
-                              >
-                                <Moon className={`h-3 w-3 ${route.isPernoite ? 'text-white fill-white' : 'text-slate-400'}`} />
-                                <span>{route.isPernoite ? 'Pernoite' : '+ Pernoite'}</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  requestConfirm(
-                                    "❌ Excluir Mapa?",
-                                    `Tem certeza que deseja excluir permanentemente o mapa ${route.routeMap} (${route.plate}) e todos os seus registros de descarregamento e auditoria?`,
-                                    () => {
-                                      handleDeleteRouteComplete(route);
-                                      alert(`Mapa ${route.routeMap} excluído com sucesso.`);
-                                    }
-                                  );
-                                }}
-                                className="text-slate-400 hover:text-red-600 transition-colors p-0.5 rounded hover:bg-slate-100 cursor-pointer"
-                                title="Excluir este mapa"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                          <div className="text-slate-500 space-y-0.5 pt-1 border-t border-slate-100">
-                            <div><strong>Motorista:</strong> {getDriverName(route.driverId)}</div>
-                            <div className="text-[9px]">Importado: {new Date(route.importedAt).toLocaleTimeString('pt-BR')}</div>
-                          </div>
+                    <div className="space-y-3 max-h-[450px] overflow-y-auto pr-1">
+                      {totalWorkingCount === 0 ? (
+                        <div className="text-center py-8 text-xxs italic text-slate-400 bg-slate-50 border border-dashed rounded-lg">
+                          Nenhum mapa sendo trabalhado.
                         </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
+                      ) : (
+                        <>
+                          {workingRoutes.map(route => {
+                            const isPendente = route.status === 'pendente' || !route.status;
+                            const isConferindo = route.status === 'conferindo';
+                            const isEmAnalise = route.status === 'em_analise';
+                            const isReconferir = route.status === 'reconferir';
+
+                            let badgeColor = "bg-red-100 text-red-800 border-red-200";
+                            let statusText = "Pendente";
+                            if (isConferindo) {
+                              badgeColor = "bg-amber-100 text-amber-800 border-amber-200 animate-pulse";
+                              statusText = "Conferindo";
+                            } else if (isEmAnalise) {
+                              badgeColor = "bg-emerald-100 text-emerald-800 border-emerald-200";
+                              statusText = "Em Análise";
+                            } else if (isReconferir) {
+                              badgeColor = "bg-purple-100 text-purple-800 border-purple-200 animate-pulse";
+                              statusText = "Pedida Recontagem";
+                            }
+
+                            return (
+                              <div key={route.id} className={`p-3 rounded-xl border space-y-2 text-xxs transition-all ${
+                                route.isPernoite 
+                                  ? 'bg-purple-50/70 border-purple-300 ring-1 ring-purple-200' 
+                                  : 'bg-slate-50/60 border-slate-200'
+                              }`}>
+                                <div className="flex justify-between items-start">
+                                  <div>
+                                    <div className="flex items-center space-x-2">
+                                      <span className="font-extrabold text-slate-900 font-sans block text-sm">{route.routeMap}</span>
+                                      {route.isPernoite && (
+                                        <span className="bg-purple-100 text-purple-800 text-[8px] font-extrabold px-1.5 py-0.5 rounded border border-purple-300 flex items-center space-x-0.5">
+                                          <Moon className="h-2.5 w-2.5 text-purple-600 fill-purple-600" />
+                                          <span>PERNOITE</span>
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="space-y-0.5">
+                                      <span className="font-mono text-[9px] text-slate-400 block">Placa: {route.plate}</span>
+                                      <span className="text-[9px] text-slate-500 font-mono block">Data Rota: {route.routeDate ? new Date(route.routeDate + 'T00:00:00').toLocaleDateString('pt-BR') : 'N/A'}</span>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center space-x-1.5">
+                                    <span className={`text-[8px] font-bold uppercase px-1.5 py-0.5 rounded border ${badgeColor}`}>
+                                      {statusText}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleTogglePernoite({ routeMap: route.routeMap, plate: route.plate, isPernoite: route.isPernoite });
+                                      }}
+                                      className={`text-[9px] font-bold px-2 py-0.5 rounded transition-all flex items-center space-x-1 cursor-pointer border ${
+                                        route.isPernoite
+                                          ? 'bg-purple-600 hover:bg-purple-700 text-white border-purple-700 shadow-xs'
+                                          : 'bg-white hover:bg-purple-50 text-slate-600 hover:text-purple-700 border-slate-200 hover:border-purple-300'
+                                      }`}
+                                      title={route.isPernoite ? "Desmarcar pernoite (veículo volta para o indicador normal)" : "Marcar veículo como Pernoite"}
+                                    >
+                                      <Moon className={`h-3 w-3 ${route.isPernoite ? 'text-white fill-white' : 'text-slate-400'}`} />
+                                      <span>{route.isPernoite ? 'Pernoite' : '+ Pernoite'}</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        requestConfirm(
+                                          "❌ Excluir Mapa?",
+                                          `Tem certeza que deseja excluir permanentemente o mapa ${route.routeMap} (${route.plate}) e todos os seus registros de descarregamento e auditoria?`,
+                                          () => {
+                                            handleDeleteRouteComplete(route);
+                                            alert(`Mapa ${route.routeMap} excluído com sucesso.`);
+                                          }
+                                        );
+                                      }}
+                                      className="text-slate-400 hover:text-red-600 transition-colors p-0.5 rounded hover:bg-slate-100 cursor-pointer"
+                                      title="Excluir este mapa"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
+                                </div>
+                                <div className="text-slate-500 space-y-0.5 pt-1 border-t border-slate-100">
+                                  <div><strong>Motorista:</strong> {getDriverName(route.driverId)}</div>
+                                  <div className="text-[9px]">Importado: {new Date(route.importedAt).toLocaleTimeString('pt-BR')}</div>
+                                </div>
+                              </div>
+                            );
+                          })}
+
+                          {standaloneActiveAudits.map(activeAudit => {
+                            const isReconferir = activeAudit.status === 'reconferencia';
+                            const badgeColor = isReconferir ? "bg-purple-100 text-purple-800 border-purple-200 animate-pulse" : "bg-amber-100 text-amber-800 border-amber-200 animate-pulse";
+                            const statusText = isReconferir ? "Pedida Recontagem" : "Conferindo";
+                            const isUnified = (activeAudit.unifiedMaps && activeAudit.unifiedMaps.length > 1) || activeAudit.routeMap.includes('+');
+
+                            return (
+                              <div key={activeAudit.id} className="p-3 rounded-xl border border-amber-200 bg-amber-50/40 space-y-2 text-xxs transition-all">
+                                <div className="flex justify-between items-start">
+                                  <div>
+                                    <div className="flex items-center space-x-1.5 flex-wrap">
+                                      <span className="font-extrabold text-slate-900 font-sans block text-sm">{activeAudit.routeMap}</span>
+                                      {isUnified && (
+                                        <span className="bg-amber-100 text-amber-800 text-[8px] font-black px-1.5 py-0.5 rounded border border-amber-300">
+                                          UNIFICADO
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="space-y-0.5 mt-0.5">
+                                      <span className="font-mono text-[9px] text-slate-500 block">Placa: {activeAudit.plate}</span>
+                                      {activeAudit.arrivalDate && (
+                                        <span className="text-[9px] text-slate-500 font-mono block">Data: {new Date(activeAudit.arrivalDate + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center space-x-1">
+                                    <span className={`text-[8px] font-bold uppercase px-1.5 py-0.5 rounded border ${badgeColor}`}>
+                                      {statusText}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="text-slate-500 space-y-0.5 pt-1 border-t border-slate-100">
+                                  <div><strong>Motorista:</strong> {getDriverName(activeAudit.driverId) || activeAudit.tempDriverName || 'N/A'}</div>
+                                  <div className="text-[9px]"><strong>Conferente:</strong> {activeAudit.checkerName || (activeAudit.conferenteId ? (DEFAULT_USERS.find(u => u.id === activeAudit.conferenteId)?.name || activeAudit.conferenteId) : 'Em atividade')}</div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Column 2: Aguardando Reconciliação (Pendentes) */}
               <div className="bg-white rounded-xl shadow-xs border border-slate-200 p-5 space-y-4">
@@ -7289,10 +7350,14 @@ export default function FiscalView({
                                   fiscalQty: a.fiscalQty !== undefined ? a.fiscalQty : undefined
                                 })),
                                 exchanges: audit.exchanges && audit.exchanges.length > 0 ? audit.exchanges : (() => {
-                                  if (audit.unifiedMaps && audit.unifiedMaps.length > 0) {
+                                  const memberMaps = (audit.unifiedMaps && audit.unifiedMaps.length > 0)
+                                    ? audit.unifiedMaps.map(m => normalizeMapCode(m).toUpperCase())
+                                    : (audit.routeMap ? audit.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase()) : []);
+                                  
+                                  if (memberMaps.length > 1) {
                                     const combinedExchangesMap: { [key: string]: AuditExchangeItem } = {};
-                                    audit.unifiedMaps.forEach(mapCode => {
-                                      const r = importedRoutes.find(route => route.routeMap.toUpperCase() === mapCode.toUpperCase());
+                                    memberMaps.forEach(mapCode => {
+                                      const r = importedRoutes.find(route => normalizeMapCode(route.routeMap).toUpperCase() === mapCode);
                                       if (r && r.exchanges) {
                                         r.exchanges.forEach(ex => {
                                           const key = `${ex.productCode}_${ex.type}`;
@@ -7306,23 +7371,23 @@ export default function FiscalView({
                                     });
                                     return Object.values(combinedExchangesMap);
                                   } else {
-                                    const matchingRoute = importedRoutes.find(r => r.routeMap.toUpperCase() === audit.routeMap.trim().toUpperCase());
+                                    const matchingRoute = importedRoutes.find(r => normalizeMapCode(r.routeMap).toUpperCase() === normalizeMapCode(audit.routeMap).toUpperCase());
                                     return (matchingRoute && matchingRoute.exchanges && matchingRoute.exchanges.length > 0)
                                       ? matchingRoute.exchanges
                                       : [];
                                   }
-                                })()
+                                })(),
                               };
                               
                               let combinedNotes = initializedSession.reconciliationNotes || '';
                               if (!combinedNotes) {
                                 const mapsToSearch = (initializedSession.unifiedMaps && initializedSession.unifiedMaps.length > 0)
-                                  ? initializedSession.unifiedMaps
-                                  : [initializedSession.routeMap];
+                                  ? initializedSession.unifiedMaps.map(m => normalizeMapCode(m).toUpperCase())
+                                  : (initializedSession.routeMap ? initializedSession.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase()) : []);
                                 
                                 const obsList: string[] = [];
                                 mapsToSearch.forEach(m => {
-                                  const r = importedRoutes.find(route => route.routeMap.toUpperCase() === m.toUpperCase());
+                                  const r = importedRoutes.find(route => normalizeMapCode(route.routeMap).toUpperCase() === m);
                                   if (r) {
                                     if (r.routeObservations && r.routeObservations.length > 0) {
                                       r.routeObservations.forEach(o => {

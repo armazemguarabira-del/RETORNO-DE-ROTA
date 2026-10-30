@@ -96,8 +96,12 @@ export interface AuditSession {
   exchangePlate?: string;   // Placa substituta (Troca de veículo se houver)
   driverId: string;         // Motorista principal
   helperId?: string;        // Ajudante
+  tempDriverName?: string;  // Nome avulso do motorista
+  tempHelperName?: string;  // Nome avulso do ajudante
+  checkerName?: string;     // Nome do conferente
   arrivalKm?: number;       // KM de chegada
   arrivalDate: string;      // YYYY-MM-DD
+  routeDate?: string;       // Data da rota original se diferente da chegada
   
   // Timing productivity metrics
   startTime?: string;       // ISO string when physical count starts
@@ -597,3 +601,25 @@ export interface ZeroBreakDeclaration {
   declaredAt: string;
 }
 
+/**
+ * Canonical normalizer for route map codes:
+ * - Trims whitespace
+ * - Handles unified maps separated by '+' (e.g. "027104 + 027105" -> "27104 + 27105")
+ * - Strips leading zeros cleanly for numeric identifiers (e.g. "00123" -> "123", "0" -> "0")
+ * - Preserves map identifiers cleanly
+ */
+export const normalizeMapCode = (mapCode: any): string => {
+  if (mapCode === undefined || mapCode === null) return '';
+  const str = String(mapCode).trim();
+  if (!str) return '';
+  if (str.includes('+')) {
+    return str
+      .split('+')
+      .map(part => normalizeMapCode(part))
+      .filter(Boolean)
+      .join(' + ');
+  }
+  const clean = str.trim();
+  const stripped = clean.replace(/^0+/, '');
+  return stripped.length > 0 ? stripped : (clean.match(/^0+$/) ? '0' : clean);
+};
