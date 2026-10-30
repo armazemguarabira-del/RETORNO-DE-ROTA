@@ -2913,14 +2913,8 @@ export default function FiscalView({
 
   // Pending for fiscal verification (active conferences awaiting reconciliation)
   const pendingAudits = audits.filter(a => {
-    // If reopening was requested by fiscal/conferente/auxiliar, keep in pending so fiscal can re-reconcile
-    if (a.reopeningRequested) return true;
-
-    // If audit was reopened, and status is conferido_fisico or recontagem_finalizada, ALWAYS show in pending!
-    const wasReopened = a.reopened === true || (a.history && a.history.some(h => h.action.includes('Reabert') || h.action.includes('Reabertura')));
-    if (wasReopened && (a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada')) {
-      return true;
-    }
+    // If reopening was requested and pending approval, do not show in reconciliation queue yet
+    if (a.reopeningRequested) return false;
 
     // If PDF was downloaded or status is already finalized or surplus status is BAIXADO
     if (a.pdfDownloaded || a.surplusFlowStatus === 'BAIXADO') return false;
@@ -2973,8 +2967,8 @@ export default function FiscalView({
     };
   }, [importedRoutes, audits, pendingAudits]);
 
-  const getDriverName = (id: string) => id === 'temporario' ? 'Temporário' : (drivers.find(d => d.id === id)?.name || id);
-  const getHelperName = (id?: string) => id ? drivers.find(d => d.id === id)?.name || id : 'Sem ajudante';
+  const getDriverName = (id?: string) => !id ? '' : (id === 'temporario' ? 'Temporário' : (drivers.find(d => d.id === id)?.name || id));
+  const getHelperName = (id?: string) => !id ? 'Sem ajudante' : (drivers.find(d => d.id === id)?.name || id);
 
   const getDaysOnRoute = (audit: AuditSession) => {
     const allMaps = [audit.routeMap, ...(audit.unifiedMaps || [])];
@@ -4613,8 +4607,9 @@ export default function FiscalView({
   const recFilteredProducts = recProductSearch.trim() === ''
     ? []
     : products.filter(p => 
-        p.code.toLowerCase().includes(recProductSearch.toLowerCase()) || 
-        p.description.toLowerCase().includes(recProductSearch.toLowerCase())
+        p && 
+        (((p.code || '').toLowerCase().includes(recProductSearch.toLowerCase())) || 
+         ((p.description || '').toLowerCase().includes(recProductSearch.toLowerCase())))
       ).slice(0, 10);
 
   const handleSelectRecProduct = (prod: Product) => {
@@ -5019,13 +5014,13 @@ export default function FiscalView({
     const q = (searchTerm || '').trim().toLowerCase();
     const matchesSearch = !q ||
       (a.routeMap || '').toLowerCase().includes(q) ||
-      normalizeMapCode(a.routeMap).toLowerCase().includes(q) ||
+      normalizeMapCode(a.routeMap || '').toLowerCase().includes(q) ||
       (a.plate || '').toLowerCase().includes(q) ||
-      getDriverName(a.driverId).toLowerCase().includes(q) ||
+      (getDriverName(a.driverId) || '').toLowerCase().includes(q) ||
       (a.tempDriverName || '').toLowerCase().includes(q) ||
       (a.tempHelperName || '').toLowerCase().includes(q) ||
-      getDriverName(a.helperId).toLowerCase().includes(q) ||
-      (a.unifiedMaps && a.unifiedMaps.some(m => m.toLowerCase().includes(q) || normalizeMapCode(m).toLowerCase().includes(q)));
+      (getHelperName(a.helperId) || '').toLowerCase().includes(q) ||
+      (a.unifiedMaps && a.unifiedMaps.some(m => (m || '').toLowerCase().includes(q) || normalizeMapCode(m || '').toLowerCase().includes(q)));
     
     // Check date bounds if configured (with fallback to routeDate, endTime, or startTime)
     const auditDate = a.arrivalDate || a.routeDate || (a.endTime ? a.endTime.split('T')[0] : '') || (a.startTime ? a.startTime.split('T')[0] : '');
@@ -12216,7 +12211,7 @@ export default function FiscalView({
 
       {/* Custom Confirmation Modal */}
       {confirmModal.isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in" id="custom_confirm_modal_fiscal">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in" id="custom_confirm_modal_fiscal">
           <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 space-y-4">
             <div className="flex items-center space-x-3 text-amber-600">
               <div className="p-2 bg-amber-50 rounded-lg">

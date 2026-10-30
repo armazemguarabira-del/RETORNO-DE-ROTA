@@ -4949,7 +4949,7 @@ export default function ConferenteView({
 
       {/* Custom Confirmation Modal */}
       {confirmModal.isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/60 backdrop-blur-xs animate-fade-in" id="custom_confirm_modal_conferente">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-3 bg-black/60 backdrop-blur-xs animate-fade-in" id="custom_confirm_modal_conferente">
           <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-slate-100 space-y-4 max-h-[92dvh] overflow-y-auto">
             <div className="flex items-center space-x-3 text-amber-600">
               <div className="p-2 bg-amber-50 rounded-lg shrink-0">

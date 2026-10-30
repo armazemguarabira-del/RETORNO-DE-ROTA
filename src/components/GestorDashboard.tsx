@@ -9395,7 +9395,7 @@ export default function GestorDashboard({
                 const matchesSearch = !query ||
                                       (a.routeMap || '').toLowerCase().includes(query) ||
                                       (a.plate || '').toLowerCase().includes(query) ||
-                                      driverName.toLowerCase().includes(query);
+                                      (driverName || '').toLowerCase().includes(query);
                 
                 let matchesDate = true;
                 if (historyStartDate) matchesDate = matchesDate && (a.arrivalDate >= historyStartDate);
@@ -10074,7 +10074,7 @@ export default function GestorDashboard({
 
       {/* Custom Confirmation Modal */}
       {confirmModal.isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in" id="custom_confirm_modal">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in" id="custom_confirm_modal">
           <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 space-y-4">
             <div className="flex items-center space-x-3 text-amber-600">
               <div className="p-2 bg-amber-50 rounded-lg">

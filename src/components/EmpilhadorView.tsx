@@ -2706,7 +2706,7 @@ export default function EmpilhadorView({
 
       {/* Custom Confirmation Modal */}
       {confirmModal.isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-fade-in" id="confirm_modal_empilhador">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-fade-in" id="confirm_modal_empilhador">
           <div className="bg-slate-900 rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-800 space-y-4 text-slate-100">
             <div className="flex items-center space-x-3 text-amber-400">
               <div className="p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg">

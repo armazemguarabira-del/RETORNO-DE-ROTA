@@ -181,8 +181,10 @@ export interface AuditSession {
   reopeningRequestDate?: string;
   reopeningRequestUser?: string;
   reopened?: boolean;
+  reopenDate?: string;
   reopenedAt?: string;
   reopenedBy?: string;
+  diasCiclo?: number;
 }
 
 export interface RouteObservation {
@@ -270,6 +272,7 @@ export interface ImportedRoute {
     completedAt: string;
     completedBy: string;
   };
+  diasCiclo?: number;
 }
 
 export function isTreatableAssetId(assetId: string): boolean {
