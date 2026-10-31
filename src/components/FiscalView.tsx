@@ -2943,10 +2943,35 @@ export default function FiscalView({
 
   // Memoized process metrics for "Monitoramento Integrado de Processos"
   const processProgressMetrics = React.useMemo(() => {
-    const totalWorking = importedRoutes.filter(r => (r.status === 'conferindo' || r.status === 'reconferir') && !isRouteClosed(r.routeMap)).length;
-    const totalPending = importedRoutes.filter(r => (r.status === 'pendente' || !r.status) && (r.status as string) !== 'fechado' && !isRouteClosed(r.routeMap)).length;
+    const isAwaitingConciliation = (mapCode: string) => {
+      const normR = normalizeMapCode(mapCode).toUpperCase();
+      const upperR = mapCode.trim().toUpperCase();
+      return pendingAudits.some(a => {
+        const normA = normalizeMapCode(a.routeMap).toUpperCase();
+        const upperA = a.routeMap.trim().toUpperCase();
+        return normA === normR || upperA === upperR || (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normR || m.trim().toUpperCase() === upperR));
+      });
+    };
+
+    const workingRoutes = importedRoutes.filter(r => 
+      r.status !== 'fechado' && 
+      r.status !== 'em_analise' && 
+      !isRouteClosed(r.routeMap, r.routeDate) &&
+      !isAwaitingConciliation(r.routeMap)
+    );
+
+    const standaloneActiveAudits = audits.filter(a => {
+      if (a.status !== 'em_aberto' && a.status !== 'reconferencia') return false;
+      if (a.pdfDownloaded || a.surplusFlowStatus === 'BAIXADO') return false;
+      const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
+      const isDirectlyInWorking = workingRoutes.some(r => normalizeMapCode(r.routeMap).toUpperCase() === aNorm);
+      return !isDirectlyInWorking;
+    });
+
+    const totalWorking = workingRoutes.filter(r => r.status === 'conferindo' || r.status === 'reconferir').length + standaloneActiveAudits.length;
+    const totalPending = workingRoutes.filter(r => r.status === 'pendente' || !r.status).length;
     const totalWaiting = pendingAudits.length;
-    const totalReconciled = audits.filter(a => a.status === 'finalizado_ok' || a.status === 'finalizado_divergente').length;
+    const totalReconciled = audits.filter(a => (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') && !a.reopeningRequested).length;
 
     const totalCalculated = totalWorking + totalPending + totalWaiting + totalReconciled;
     const pendingPct = totalCalculated > 0 ? (totalPending / totalCalculated) * 100 : 0;
@@ -3829,10 +3854,11 @@ export default function FiscalView({
 
         onSaveAudits(updatedAudits);
 
+        let nextRoutes = importedRoutes;
         if (onSaveImportedRoutes && importedRoutes) {
           const targetNorm = normalizeMapCode(targetAudit.routeMap).toUpperCase();
           const targetUpper = targetAudit.routeMap.trim().toUpperCase();
-          const updatedRoutes = importedRoutes.map(r => {
+          nextRoutes = importedRoutes.map(r => {
             const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
             const rUpper = r.routeMap.trim().toUpperCase();
             const isMatched = rNorm === targetNorm || rUpper === targetUpper ||
@@ -3842,11 +3868,19 @@ export default function FiscalView({
             }
             return r;
           });
-          onSaveImportedRoutes(updatedRoutes);
+          onSaveImportedRoutes(nextRoutes);
         }
 
         if (onSaveAlerts) {
           onSaveAlerts(updatedAlerts);
+        }
+
+        if (isClientFirebaseActive()) {
+          saveDirectlyToFirestore({
+            audits: updatedAudits,
+            importedRoutes: nextRoutes,
+            fiscalAlerts: updatedAlerts
+          });
         }
 
         const currentSelected = updatedAudits.find(a => a.id === auditId);
@@ -7078,7 +7112,23 @@ export default function FiscalView({
               
               {/* Column 1: Sendo Trabalhados / Em Aberto */}
               {(() => {
-                const workingRoutes = importedRoutes.filter(r => r.status !== 'fechado' && r.status !== 'em_analise' && !isRouteClosed(r.routeMap, r.routeDate));
+                const isAwaitingConciliation = (mapCode: string) => {
+                  const normR = normalizeMapCode(mapCode).toUpperCase();
+                  const upperR = mapCode.trim().toUpperCase();
+                  return pendingAudits.some(a => {
+                    const normA = normalizeMapCode(a.routeMap).toUpperCase();
+                    const upperA = a.routeMap.trim().toUpperCase();
+                    return normA === normR || upperA === upperR || (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normR || m.trim().toUpperCase() === upperR));
+                  });
+                };
+
+                const workingRoutes = importedRoutes.filter(r => 
+                  r.status !== 'fechado' && 
+                  r.status !== 'em_analise' && 
+                  !isRouteClosed(r.routeMap, r.routeDate) &&
+                  !isAwaitingConciliation(r.routeMap)
+                );
+
                 const standaloneActiveAudits = audits.filter(a => {
                   if (a.status !== 'em_aberto' && a.status !== 'reconferencia') return false;
                   if (a.pdfDownloaded || a.surplusFlowStatus === 'BAIXADO') return false;
@@ -13565,6 +13615,54 @@ export default function FiscalView({
                   </div>
                 );
               })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal */}
+      {confirmModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-200">
+            <div className="p-5 bg-slate-900 text-white flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="p-2 bg-amber-500/20 text-amber-400 rounded-lg">
+                  <AlertTriangle className="h-5 w-5" />
+                </div>
+                <h3 className="text-base font-bold tracking-tight">{confirmModal.title}</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConfirmModal({ isOpen: false, title: '', message: '' })}
+                className="text-slate-400 hover:text-white transition p-1 rounded-lg hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              <p className="text-sm text-slate-700 leading-relaxed font-medium">
+                {confirmModal.message}
+              </p>
+            </div>
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end space-x-3">
+              <button
+                type="button"
+                onClick={() => setConfirmModal({ isOpen: false, title: '', message: '' })}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:text-slate-800 hover:bg-slate-200/60 rounded-xl transition cursor-pointer font-sans"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const cb = confirmCallbackRef.current;
+                  setConfirmModal({ isOpen: false, title: '', message: '' });
+                  if (cb) cb();
+                }}
+                className="px-5 py-2 text-xs font-extrabold text-white bg-amber-500 hover:bg-amber-600 active:bg-amber-700 rounded-xl shadow-md transition cursor-pointer font-sans uppercase tracking-wider"
+              >
+                Confirmar
+              </button>
             </div>
           </div>
         </div>
