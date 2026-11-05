@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, ReturnForecast, FiscalAlert, ImportedRoute, CarregamentoProcess, Empilhador, isTreatableAssetId, getAssetCode, getAssetCanonicalName, normalizeMapCode } from '../types';
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { DEFAULT_ACTIVE_ASSETS } from '../data';
+import { isClientFirebaseActive, saveDirectlyToFirestore } from '../clientFirebase';
 import { 
   Play, ClipboardCheck, Search, Plus, Trash2, ArrowRight, AlertTriangle, 
   Clock, RefreshCw, UserCheck, Camera, Upload, Bell, CheckCircle2, 
@@ -1832,7 +1833,7 @@ export default function ConferenteView({
       : [updatedSession, ...audits];
     onSaveAudits(updatedAudits);
 
-    // Create notification alert for Auxiliar de Logistica
+    let updatedAlerts = fiscalAlerts;
     if (onSaveAlerts && fiscalAlerts) {
       const newAlert: FiscalAlert = {
         id: 'al_' + Date.now(),
@@ -1847,22 +1848,36 @@ export default function ConferenteView({
           : `O conferente ${currentUser.name} finalizou a conferência física do mapa ${activeSession.routeMap} (${activeSession.plate}).`,
         targetRole: 'auxiliar_logistica'
       };
-      onSaveAlerts([newAlert, ...fiscalAlerts]);
+      updatedAlerts = [newAlert, ...fiscalAlerts];
+      onSaveAlerts(updatedAlerts);
     }
 
     // Transition matching ImportedRoute to em_analise (green status)
+    let updatedRoutes = importedRoutes;
     if (onSaveImportedRoutes && importedRoutes) {
       const targetMapCodes = (activeSession.unifiedMaps && activeSession.unifiedMaps.length > 0)
         ? activeSession.unifiedMaps.map(m => normalizeMapCode(m).toUpperCase())
         : activeSession.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase());
       const sessionMapNorm = normalizeMapCode(activeSession.routeMap).toUpperCase();
 
-      const updatedRoutes = importedRoutes.map(r => {
+      updatedRoutes = importedRoutes.map(r => {
         const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
         const isMatched = rNorm === sessionMapNorm || targetMapCodes.includes(rNorm);
         return isMatched ? { ...r, status: 'em_analise' as const } : r;
       });
       onSaveImportedRoutes(updatedRoutes);
+    }
+
+    if (isClientFirebaseActive()) {
+      try {
+        saveDirectlyToFirestore({
+          audits: updatedAudits,
+          importedRoutes: updatedRoutes,
+          fiscalAlerts: updatedAlerts
+        });
+      } catch (fsErr) {
+        console.warn('[Conferente] Aviso ao sincronizar conferência com o Firestore:', fsErr);
+      }
     }
 
     alert(`${actionText} com sucesso! Enviado para conciliação do Auxiliar de Armazém/Logística.`);
@@ -2270,7 +2285,7 @@ export default function ConferenteView({
   };
 
   // Helper to determine if a route is closed based on audits
-  const isRouteClosedInAudits = (routeMap: string) => {
+  const isRouteClosedInAudits = (routeMap: string, routeDate?: string) => {
     const norm = normalizeMapCode(routeMap).toUpperCase();
     const upper = routeMap.trim().toUpperCase();
     return audits.some(a => {
@@ -2278,8 +2293,15 @@ export default function ConferenteView({
       const aUpper = a.routeMap.trim().toUpperCase();
       const isMatch = aNorm === norm || aUpper === upper ||
         (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === norm || m.trim().toUpperCase() === upper));
+      if (!isMatch) return false;
+
+      if (routeDate) {
+        const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+        if (aDate && aDate !== routeDate) return false;
+      }
+
       const isFinished = a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || (a.status as string) === 'fechado' || (a as any).pdfDownloaded === true || (a as any).surplusFlowStatus === 'BAIXADO';
-      return isMatch && isFinished && !a.reopeningRequested;
+      return isFinished && !a.reopeningRequested;
     });
   };
 
@@ -2314,11 +2336,16 @@ export default function ConferenteView({
       const matchingAudit = (audits || []).find(a => {
         if (!a) return false;
         const aNorm = normalizeMapCode(a.routeMap || '').toUpperCase();
-        if (aNorm === routeMapNorm || (a.routeMap || '').toUpperCase() === routeMapUpper) return true;
-        if (a.unifiedMaps) {
-          return a.unifiedMaps.some(m => normalizeMapCode(m || '').toUpperCase() === routeMapNorm || (m || '').toUpperCase() === routeMapUpper);
+        const matchesMap = aNorm === routeMapNorm || (a.routeMap || '').toUpperCase() === routeMapUpper ||
+          (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m || '').toUpperCase() === routeMapNorm || (m || '').toUpperCase() === routeMapUpper));
+        if (!matchesMap) return false;
+
+        if (route.routeDate) {
+          const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+          if (aDate && aDate !== route.routeDate) return false;
         }
-        return false;
+
+        return true;
       });
 
       const isFinalizedInAudit = matchingAudit && (
@@ -2330,7 +2357,7 @@ export default function ConferenteView({
       );
       const isReopeningReq = matchingAudit?.reopeningRequested === true;
       const isSubmittedToFiscal = matchingAudit && (matchingAudit.status === 'conferido_fisico' || matchingAudit.status === 'recontagem_finalizada');
-      const isClosed = (isRouteClosedInAudits(route.routeMap || '') || (route.status as string) === 'fechado' || isFinalizedInAudit) && !isReopeningReq;
+      const isClosed = (isRouteClosedInAudits(route.routeMap || '', route.routeDate) || (route.status as string) === 'fechado' || isFinalizedInAudit) && !isReopeningReq;
 
       // Only include routes that are truly open/pending for physical count
       if ((!isClosed && !isSubmittedToFiscal && (route.status as string) !== 'em_analise') || isReopeningReq) {

@@ -33,7 +33,7 @@ export default function MonitoramentoView({
   onSaveAudits
 }: MonitoramentoViewProps) {
   // Helper to determine if a route is closed based on audits
-  const isRouteClosedInAudits = (routeMap: string) => {
+  const isRouteClosedInAudits = (routeMap: string, routeDate?: string) => {
     const norm = normalizeMapCode(routeMap).toUpperCase();
     const upper = routeMap.trim().toUpperCase();
     return (audits || []).some(a => {
@@ -42,8 +42,15 @@ export default function MonitoramentoView({
       const aUpper = (a.routeMap || '').trim().toUpperCase();
       const isMatch = aNorm === norm || aUpper === upper ||
         ((a.unifiedMaps || []).some(m => normalizeMapCode(m).toUpperCase() === norm || (m || '').trim().toUpperCase() === upper));
+      if (!isMatch) return false;
+
+      if (routeDate) {
+        const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+        if (aDate && aDate !== routeDate) return false;
+      }
+
       const isFinished = a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || (a as any).pdfDownloaded === true || (a as any).surplusFlowStatus === 'BAIXADO';
-      return isMatch && isFinished;
+      return isFinished;
     });
   };
 
@@ -285,7 +292,7 @@ export default function MonitoramentoView({
     return new Date().toISOString().split('T')[0];
   });
 
-  const routesForSelectedDate = importedRoutes.filter(r => r.routeDate === selectedDate && r.status !== 'fechado' && !isRouteClosedInAudits(r.routeMap));
+  const routesForSelectedDate = importedRoutes.filter(r => r.routeDate === selectedDate && r.status !== 'fechado' && !isRouteClosedInAudits(r.routeMap, r.routeDate));
 
   return (
     <div className="w-full px-2 sm:px-6 lg:px-8 py-4 sm:py-8 space-y-8" id="monitoramento_workspace">

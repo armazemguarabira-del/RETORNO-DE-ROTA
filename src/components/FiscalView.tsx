@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, FiscalAlert, ImportedRoute, RouteObservation, Vale, ValeCollaborator, ReturnForecast, getAssetCode, getAssetCanonicalName, isExemptAsset, getAssetUnitCost, normalizeMapCode } from '../types';
 import { isClientFirebaseActive, saveDirectlyToFirestore } from '../clientFirebase';
-import { ClipboardCheck, ShieldAlert, ArrowRight, ShieldCheck, CheckSquare, AlertTriangle, HelpCircle, Search, RefreshCw, XCircle, DollarSign, Calendar, SlidersHorizontal, FileSpreadsheet, Clock, CheckCircle2, Shield, Trash2, Camera, BarChart3, AlertCircle, Plus, PlusCircle, FileText, Check, Award, Eye, Calculator, Folder, Copy, X, ArrowUpCircle, ArrowDownCircle, Sparkles, FolderOpen, Download, FileCheck, PackageCheck, UserPlus, FileJson, Archive, Moon, Info, Edit3, Users } from 'lucide-react';
+import { ClipboardCheck, ShieldAlert, ArrowRight, ShieldCheck, CheckSquare, AlertTriangle, HelpCircle, Search, RefreshCw, XCircle, DollarSign, Calendar, SlidersHorizontal, FileSpreadsheet, Clock, CheckCircle2, Shield, Trash2, Camera, BarChart3, AlertCircle, Plus, PlusCircle, FileText, Check, Award, Eye, Calculator, Folder, Copy, X, ArrowUpCircle, ArrowDownCircle, Sparkles, FolderOpen, Download, FileCheck, PackageCheck, UserPlus, FileJson, Archive, Moon, Info, Edit3, Users, Table, LayoutGrid, Filter, Layers, Printer } from 'lucide-react';
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { jsPDF } from 'jspdf';
 import JSZip from 'jszip';
@@ -713,6 +713,74 @@ const getUnifiedTimeline = (audit: AuditSession, importedRoutes: ImportedRoute[]
   return events.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 };
 
+function formatDateBR(dateStr?: string): string {
+  if (!dateStr) return '-';
+  try {
+    const clean = dateStr.split('T')[0].trim();
+    if (clean.includes('/')) {
+      const parts = clean.split('/');
+      if (parts.length === 3) {
+        if (parts[0].length === 4) return `${parts[2]}/${parts[1]}/${parts[0]}`;
+        return `${parts[0]}/${parts[1]}/${parts[2]}`;
+      }
+    }
+    if (clean.includes('-')) {
+      const parts = clean.split('-');
+      if (parts.length === 3) {
+        if (parts[0].length === 4) return `${parts[2]}/${parts[1]}/${parts[0]}`;
+        return `${parts[0]}/${parts[1]}/${parts[2]}`;
+      }
+    }
+    return new Date(dateStr).toLocaleDateString('pt-BR');
+  } catch (e) {
+    return dateStr;
+  }
+}
+
+function normalizeToYYYYMMDD(d?: string): string {
+  if (!d) return '';
+  const clean = d.split('T')[0].trim();
+  if (clean.includes('/')) {
+    const parts = clean.split('/');
+    if (parts.length === 3) {
+      if (parts[0].length === 4) return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+      return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+    }
+  }
+  if (clean.includes('-')) {
+    const parts = clean.split('-');
+    if (parts.length === 3) {
+      if (parts[0].length === 4) return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+      return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+    }
+  }
+  return clean;
+}
+
+function getTodayYYYYMMDD(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function getLastNDaysYYYYMMDD(days: number): string {
+  const past = new Date();
+  past.setDate(past.getDate() - days);
+  const y = past.getFullYear();
+  const m = String(past.getMonth() + 1).padStart(2, '0');
+  const d = String(past.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function getMonthStartYYYYMMDD(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  return `${y}-${m}-01`;
+}
+
 export default function FiscalView({
   currentUser,
   users = DEFAULT_USERS,
@@ -1035,9 +1103,12 @@ export default function FiscalView({
   // Filter states for Sobras & Faltas
   const [filterNB, setFilterNB] = useState('');
   const [filterDate, setFilterDate] = useState('');
+  const [filterStartDate, setFilterStartDate] = useState('');
+  const [filterEndDate, setFilterEndDate] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'sobra' | 'falta'>('all');
   const [subTabDivergencias, setSubTabDivergencias] = useState<'all' | 'pa' | 'ag'>('all');
   const [sobrasViewMode, setSobrasViewMode] = useState<'operacional' | 'master'>('operacional');
+  const [divergenciasDisplayFormat, setDivergenciasDisplayFormat] = useState<'tabela' | 'cartoes'>('tabela');
   const [reprovingAuditId, setReprovingAuditId] = useState<string | null>(null);
   const [reprovalObservation, setReprovalObservation] = useState('');
   const [dismissedPopupAuditIds, setDismissedPopupAuditIds] = useState<string[]>([]);
@@ -1117,6 +1188,11 @@ export default function FiscalView({
   const [valeObservacao, setValeObservacao] = useState('');
   const [valeColaboradoresAdicionais, setValeColaboradoresAdicionais] = useState<ValeCollaborator[]>([]);
   const [uploadingValeId, setUploadingValeId] = useState<string | null>(null);
+  const [valeSearchTerm, setValeSearchTerm] = useState('');
+  const [valeFilterCategory, setValeFilterCategory] = useState<'todos' | 'pa' | 'ag' | 'ambos' | 'pendente'>('todos');
+  const [valesFilterDate, setValesFilterDate] = useState('');
+  const [valesFilterStartDate, setValesFilterStartDate] = useState('');
+  const [valesFilterEndDate, setValesFilterEndDate] = useState('');
 
   // Rateio utility: splits total value evenly among count people, distributing remainder cents exactly
   const calculateRateioShares = (totalValue: number, count: number): number[] => {
@@ -1276,16 +1352,139 @@ export default function FiscalView({
     });
   };
 
-  // Generate printable document strictly formatted to fit exactly 1 single A4 page
-  const generatePrintableValeDocument = (valeToPrint: Vale) => {
-    const cleanValeMap = normalizeMapCode(valeToPrint.routeMap).toUpperCase();
+  // Helper to extract detailed shortages separated by P.A. and A.G. for any vale
+  const getValeAuditShortages = (vale: Vale) => {
+    const cleanValeMap = normalizeMapCode(vale.routeMap).toUpperCase();
     const associatedAudit = (audits || []).find(a => {
-      if (valeToPrint.auditId && a.id === valeToPrint.auditId) return true;
+      if (vale.auditId && a.id === vale.auditId) return true;
       const aMap = normalizeMapCode(a.routeMap).toUpperCase();
       if (cleanValeMap && aMap === cleanValeMap) return true;
       if (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === cleanValeMap)) return true;
       return false;
     });
+
+    const paShortages: Array<{
+      code: string;
+      name: string;
+      expected: number;
+      found: number;
+      comodato: number;
+      recolha: number;
+      diff: number;
+      cost: number;
+      totalCost: number;
+      isAsset: false;
+      unit: string;
+    }> = [];
+
+    const agShortages: Array<{
+      code: string;
+      name: string;
+      expected: number;
+      found: number;
+      comodato: number;
+      recolha: number;
+      diff: number;
+      cost: number;
+      totalCost: number;
+      isAsset: true;
+      unit: string;
+    }> = [];
+
+    if (associatedAudit) {
+      (associatedAudit.items || []).forEach(i => {
+        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : (i.physicalQty ?? 0);
+        const fisc = i.fiscalQty ?? 0;
+        const comodato = i.comodatoQty ?? 0;
+        const recolha = i.recolhaQty ?? 0;
+        const netDiff = (phys + comodato - recolha) - fisc;
+        if (netDiff < 0) {
+          const diff = Math.abs(netDiff);
+          const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
+          paShortages.push({
+            code: i.productCode,
+            name: i.productDescription || `SKU ${i.productCode}`,
+            expected: fisc,
+            found: phys,
+            comodato,
+            recolha,
+            diff,
+            cost: unitCost,
+            totalCost: diff * unitCost,
+            isAsset: false,
+            unit: 'cx'
+          });
+        }
+      });
+
+      (associatedAudit.assets || []).forEach(a => {
+        if (isExemptAsset(a.assetId, a.assetName)) return;
+
+        const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : (a.physicalQty ?? 0);
+        const fisc = a.fiscalQty ?? 0;
+        const comodato = a.comodatoQty ?? 0;
+        const recolha = a.recolhaQty ?? 0;
+        const netDiff = (phys + comodato - recolha) - fisc;
+        if (netDiff < 0) {
+          const diff = Math.abs(netDiff);
+          const unitCost = getAssetUnitCost(a.assetId, a.assetName, a.cost);
+          const assetCode = getAssetCode(a.assetId, a.assetName);
+          const assetName = a.assetName || getAssetCanonicalName(assetCode) || 'Ativo de Giro';
+          agShortages.push({
+            code: assetCode,
+            name: assetName,
+            expected: fisc,
+            found: phys,
+            comodato,
+            recolha,
+            diff,
+            cost: unitCost,
+            totalCost: diff * unitCost,
+            isAsset: true,
+            unit: 'un'
+          });
+        }
+      });
+    }
+
+    const paTotalCost = paShortages.reduce((sum, d) => sum + d.totalCost, 0);
+    const agTotalCost = agShortages.reduce((sum, d) => sum + d.totalCost, 0);
+    const paTotalDiff = paShortages.reduce((sum, d) => sum + d.diff, 0);
+    const agTotalDiff = agShortages.reduce((sum, d) => sum + d.diff, 0);
+    const grandTotalCost = paTotalCost + agTotalCost;
+    const grandTotalDiff = paTotalDiff + agTotalDiff;
+
+    return {
+      associatedAudit,
+      paShortages,
+      agShortages,
+      paTotalCost,
+      agTotalCost,
+      paTotalDiff,
+      agTotalDiff,
+      grandTotalCost,
+      grandTotalDiff,
+      hasPA: paShortages.length > 0,
+      hasAG: agShortages.length > 0
+    };
+  };
+
+  // Generate printable document strictly formatted to fit exactly 1 single A4 page with separated P.A. and A.G. tables
+  const generatePrintableValeDocument = (valeToPrint: Vale) => {
+    const {
+      associatedAudit,
+      paShortages,
+      agShortages,
+      paTotalCost,
+      agTotalCost,
+      paTotalDiff,
+      agTotalDiff,
+      grandTotalCost,
+      grandTotalDiff,
+      hasPA,
+      hasAG
+    } = getValeAuditShortages(valeToPrint);
+
     const vehiclePlate = associatedAudit?.plate || 'Não cadastrada';
     const arrivalDateFormatted = associatedAudit?.arrivalDate 
       ? new Date(associatedAudit.arrivalDate + 'T00:00:00').toLocaleDateString('pt-BR') 
@@ -1299,108 +1498,77 @@ export default function FiscalView({
           ? (associatedAudit.conferenteId === 'conferente_01' ? 'João Conferente' : associatedAudit.conferenteId === 'conferente_02' ? 'Pedro Ajudante' : associatedAudit.conferenteId) 
           : 'Conferente de Pátio');
 
-    const detailedShortages: Array<{ code: string; name: string; expected: number; found: number; comodato: number; recolha: number; diff: number; cost: number; totalCost: number }> = [];
-
-    if (associatedAudit) {
-      associatedAudit.items.forEach(i => {
-        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : (i.physicalQty ?? 0);
-        const fisc = i.fiscalQty ?? 0;
-        const comodato = i.comodatoQty ?? 0;
-        const recolha = i.recolhaQty ?? 0;
-        const netDiff = (phys + comodato - recolha) - fisc;
-        if (netDiff < 0) {
-          const diff = Math.abs(netDiff);
-          const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
-          detailedShortages.push({
-            code: i.productCode,
-            name: i.productDescription || 'Produto',
-            expected: fisc,
-            found: phys,
-            comodato,
-            recolha,
-            diff,
-            cost: unitCost,
-            totalCost: diff * unitCost
-          });
-        }
-      });
-
-      associatedAudit.assets.forEach(a => {
-        if (isExemptAsset(a.assetId, a.assetName)) return;
-
-        const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : (a.physicalQty ?? 0);
-        const fisc = a.fiscalQty ?? 0;
-        const comodato = a.comodatoQty ?? 0;
-        const recolha = a.recolhaQty ?? 0;
-        const netDiff = (phys + comodato - recolha) - fisc;
-        if (netDiff < 0) {
-          const diff = Math.abs(netDiff);
-          const unitCost = getAssetUnitCost(a.assetId, a.assetName, a.cost);
-          const assetCode = getAssetCode(a.assetId, a.assetName);
-          const assetName = a.assetName || getAssetCanonicalName(assetCode) || 'Ativo de Giro';
-          detailedShortages.push({
-            code: assetCode,
-            name: assetName,
-            expected: fisc,
-            found: phys,
-            comodato,
-            recolha,
-            diff,
-            cost: unitCost,
-            totalCost: diff * unitCost
-          });
-        }
-      });
-    }
-
-    const calculatedShortagesSum = detailedShortages.reduce((sum, d) => sum + d.totalCost, 0);
-    const finalValeValue = Math.max(Number(valeToPrint.valor) || 0, calculatedShortagesSum);
+    const finalValeValue = Math.max(Number(valeToPrint.valor) || 0, grandTotalCost);
 
     const additionalColabs = valeToPrint.colaboradoresAdicionais || [];
     const totalInvolvedColabs = 1 + additionalColabs.length;
     const printCalculatedShares = calculateRateioShares(finalValeValue, totalInvolvedColabs);
     const principalPrintShare = valeToPrint.colaboradorValor !== undefined && valeToPrint.colaboradorValor > 0
-      ? (calculatedShortagesSum > Number(valeToPrint.valor) ? printCalculatedShares[0] : valeToPrint.colaboradorValor)
+      ? (grandTotalCost > Number(valeToPrint.valor) ? printCalculatedShares[0] : valeToPrint.colaboradorValor)
       : printCalculatedShares[0];
 
     const additionalColabsStatement = additionalColabs.length > 0 
-      ? ` em conjunto com o(s) colaborador(es) co-responsável(is) ${additionalColabs.map((c, i) => `<strong>${c.name}</strong> (${c.role} - R$ ${(c.valor !== undefined && c.valor > 0 && !(calculatedShortagesSum > Number(valeToPrint.valor)) ? c.valor : (printCalculatedShares[i + 1] ?? 0)).toFixed(2)})`).join(', ')},` 
+      ? ` em conjunto com o(s) colaborador(es) co-responsável(is) ${additionalColabs.map((c, i) => `<strong>${c.name}</strong> (${c.role} - R$ ${(c.valor !== undefined && c.valor > 0 && !(grandTotalCost > Number(valeToPrint.valor)) ? c.valor : (printCalculatedShares[i + 1] ?? 0)).toFixed(2)})`).join(', ')},` 
       : '';
 
     const totalQty = valeToPrint.quantidade !== undefined 
       ? valeToPrint.quantidade 
-      : (detailedShortages.length > 0 ? detailedShortages.reduce((sum, d) => sum + d.diff, 0) : null);
+      : (grandTotalDiff > 0 ? grandTotalDiff : null);
 
-    // Limit shortage items to top 8 rows + consolidated row to strictly guarantee 1 page
-    const maxItemsToShow = 8;
-    const itemsToShow = detailedShortages.slice(0, maxItemsToShow);
-    const hiddenItemsCount = detailedShortages.length - maxItemsToShow;
-    const hiddenItemsTotalCost = hiddenItemsCount > 0 
-      ? detailedShortages.slice(maxItemsToShow).reduce((s, it) => s + it.totalCost, 0) 
-      : 0;
-    const hiddenItemsTotalDiff = hiddenItemsCount > 0 
-      ? detailedShortages.slice(maxItemsToShow).reduce((s, it) => s + it.diff, 0) 
-      : 0;
+    // Limit shortage items per section to ensure 1-page fit
+    const maxPaToShow = hasAG ? 5 : 8;
+    const paToShow = paShortages.slice(0, maxPaToShow);
+    const hiddenPaCount = paShortages.length - maxPaToShow;
+    const hiddenPaCost = hiddenPaCount > 0 ? paShortages.slice(maxPaToShow).reduce((s, it) => s + it.totalCost, 0) : 0;
+    const hiddenPaDiff = hiddenPaCount > 0 ? paShortages.slice(maxPaToShow).reduce((s, it) => s + it.diff, 0) : 0;
 
-    const shortageRowsHtml = itemsToShow.map(item => `
+    const maxAgToShow = hasPA ? 5 : 8;
+    const agToShow = agShortages.slice(0, maxAgToShow);
+    const hiddenAgCount = agShortages.length - maxAgToShow;
+    const hiddenAgCost = hiddenAgCount > 0 ? agShortages.slice(maxAgToShow).reduce((s, it) => s + it.totalCost, 0) : 0;
+    const hiddenAgDiff = hiddenAgCount > 0 ? agShortages.slice(maxAgToShow).reduce((s, it) => s + it.diff, 0) : 0;
+
+    const paRowsHtml = paToShow.map(item => `
       <tr>
-        <td style="padding: 7px 9px; font-family: monospace; font-weight: bold; color: #475569;">${item.code}</td>
-        <td style="padding: 7px 9px; font-weight: 600;">${item.name}</td>
-        <td style="padding: 7px 9px; text-align: center; font-family: monospace;">${item.expected}</td>
-        <td style="padding: 7px 9px; text-align: center; font-family: monospace;">${item.found}</td>
-        <td style="padding: 7px 9px; text-align: center; font-family: monospace; font-weight: bold; color: #d97706;">${item.comodato > 0 ? item.comodato : '-'}</td>
-        <td style="padding: 7px 9px; text-align: center; font-family: monospace; font-weight: bold; color: #dc2626;">-${item.diff}</td>
-        <td style="padding: 7px 9px; text-align: right; font-family: monospace;">R$ ${item.cost.toFixed(2)}</td>
-        <td style="padding: 7px 9px; text-align: right; font-family: monospace; font-weight: bold; color: #0f172a;">R$ ${item.totalCost.toFixed(2)}</td>
+        <td style="padding: 4px 6px; font-family: monospace; font-weight: bold; color: #1e3a8a;">${item.code}</td>
+        <td style="padding: 4px 6px; font-weight: 600; font-size: 9.5px;">${item.name}</td>
+        <td style="padding: 4px 6px; text-align: center; font-family: monospace;">${item.expected}</td>
+        <td style="padding: 4px 6px; text-align: center; font-family: monospace;">${item.found}</td>
+        <td style="padding: 4px 6px; text-align: center; font-family: monospace; font-weight: bold; color: #d97706;">${item.comodato > 0 ? item.comodato : '-'}</td>
+        <td style="padding: 4px 6px; text-align: center; font-family: monospace; font-weight: bold; color: #dc2626;">-${item.diff} cx</td>
+        <td style="padding: 4px 6px; text-align: right; font-family: monospace; font-size: 9px;">R$ ${item.cost.toFixed(2)}</td>
+        <td style="padding: 4px 6px; text-align: right; font-family: monospace; font-weight: bold; color: #0f172a;">R$ ${item.totalCost.toFixed(2)}</td>
       </tr>
     `).join('');
 
-    const hiddenRowHtml = hiddenItemsCount > 0 ? `
-      <tr style="background: #f8fafc; font-style: italic; color: #64748b;">
-        <td colspan="5" style="padding: 6px 9px;">+ ${hiddenItemsCount} outros itens detalhados no laudo de retorno físico</td>
-        <td style="padding: 6px 9px; text-align: center; font-family: monospace; font-weight: bold; color: #dc2626;">-${hiddenItemsTotalDiff}</td>
-        <td style="padding: 6px 9px; text-align: right;">---</td>
-        <td style="padding: 6px 9px; text-align: right; font-family: monospace; font-weight: bold;">R$ ${hiddenItemsTotalCost.toFixed(2)}</td>
+    const hiddenPaHtml = hiddenPaCount > 0 ? `
+      <tr style="background: #f8fafc; font-style: italic; color: #64748b; font-size: 8.5px;">
+        <td colspan="5" style="padding: 3px 6px;">+ ${hiddenPaCount} outros produtos acabados em falta</td>
+        <td style="padding: 3px 6px; text-align: center; font-family: monospace; font-weight: bold; color: #dc2626;">-${hiddenPaDiff} cx</td>
+        <td style="padding: 3px 6px; text-align: right;">---</td>
+        <td style="padding: 3px 6px; text-align: right; font-family: monospace; font-weight: bold;">R$ ${hiddenPaCost.toFixed(2)}</td>
+      </tr>
+    ` : '';
+
+    const agRowsHtml = agToShow.map(item => `
+      <tr>
+        <td style="padding: 4px 6px; font-family: monospace; font-weight: bold; color: #4338ca;">${item.code}</td>
+        <td style="padding: 4px 6px; font-weight: 600; font-size: 9.5px;">${item.name}</td>
+        <td style="padding: 4px 6px; text-align: center; font-family: monospace;">${item.expected}</td>
+        <td style="padding: 4px 6px; text-align: center; font-family: monospace;">${item.found}</td>
+        <td style="padding: 4px 6px; text-align: center; font-family: monospace; font-weight: bold; color: #d97706;">${item.comodato > 0 ? item.comodato : '-'}</td>
+        <td style="padding: 4px 6px; text-align: center; font-family: monospace; font-weight: bold; color: #dc2626;">-${item.diff} un</td>
+        <td style="padding: 4px 6px; text-align: right; font-family: monospace; font-size: 9px;">R$ ${item.cost.toFixed(2)}</td>
+        <td style="padding: 4px 6px; text-align: right; font-family: monospace; font-weight: bold; color: #0f172a;">R$ ${item.totalCost.toFixed(2)}</td>
+      </tr>
+    `).join('');
+
+    const hiddenAgHtml = hiddenAgCount > 0 ? `
+      <tr style="background: #f8fafc; font-style: italic; color: #64748b; font-size: 8.5px;">
+        <td colspan="5" style="padding: 3px 6px;">+ ${hiddenAgCount} outros ativos de giro em falta</td>
+        <td style="padding: 3px 6px; text-align: center; font-family: monospace; font-weight: bold; color: #dc2626;">-${hiddenAgDiff} un</td>
+        <td style="padding: 3px 6px; text-align: right;">---</td>
+        <td style="padding: 3px 6px; text-align: right; font-family: monospace; font-weight: bold;">R$ ${hiddenAgCost.toFixed(2)}</td>
       </tr>
     ` : '';
 
@@ -1413,7 +1581,7 @@ export default function FiscalView({
   <style>
     @page {
       size: A4 portrait;
-      margin: 8mm 10mm;
+      margin: 6mm 8mm;
     }
     * {
       box-sizing: border-box;
@@ -1428,14 +1596,14 @@ export default function FiscalView({
       background: #ffffff;
       color: #0f172a;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      font-size: 11px;
-      line-height: 1.45;
+      font-size: 10px;
+      line-height: 1.35;
     }
     .print-card {
       width: 100%;
-      min-height: calc(297mm - 16mm);
+      min-height: calc(297mm - 12mm);
       height: 100%;
-      padding: 4px 6px;
+      padding: 2px 4px;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
@@ -1447,41 +1615,41 @@ export default function FiscalView({
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
-      border-bottom: 2.5px solid #0f172a;
-      padding-bottom: 10px;
-      margin-bottom: 10px;
+      border-bottom: 2px solid #0f172a;
+      padding-bottom: 6px;
+      margin-bottom: 6px;
     }
     .company-title {
-      font-size: 19px;
+      font-size: 17px;
       font-weight: 900;
       text-transform: uppercase;
       letter-spacing: -0.01em;
       color: #0f172a;
     }
     .company-sub {
-      font-size: 10.5px;
+      font-size: 9.5px;
       color: #475569;
       font-family: monospace;
       text-transform: uppercase;
-      margin-top: 2px;
+      margin-top: 1px;
     }
     .company-tag {
-      font-size: 10px;
+      font-size: 9px;
       font-weight: bold;
       color: #b45309;
       text-transform: uppercase;
-      margin-top: 3px;
+      margin-top: 2px;
       display: block;
     }
     .badge-vale {
       background: #f1f5f9;
       border: 1.5px solid #cbd5e1;
-      border-radius: 6px;
-      padding: 6px 12px;
+      border-radius: 5px;
+      padding: 4px 10px;
       text-align: right;
     }
     .badge-vale-label {
-      font-size: 9px;
+      font-size: 8.5px;
       color: #64748b;
       font-weight: bold;
       text-transform: uppercase;
@@ -1489,49 +1657,49 @@ export default function FiscalView({
     }
     .badge-vale-id {
       font-family: monospace;
-      font-size: 16px;
+      font-size: 15px;
       font-weight: 900;
       color: #dc2626;
-      line-height: 1.2;
+      line-height: 1.1;
     }
     .badge-vale-date {
-      font-size: 9.5px;
+      font-size: 8.5px;
       color: #475569;
       font-family: monospace;
     }
     .title-banner {
       background: #f8fafc;
-      border: 1.5px solid #cbd5e1;
-      border-radius: 6px;
+      border: 1px solid #cbd5e1;
+      border-radius: 5px;
       text-align: center;
-      padding: 9px 12px;
-      margin-bottom: 10px;
+      padding: 6px 10px;
+      margin-bottom: 6px;
     }
     .title-banner h2 {
-      font-size: 14px;
+      font-size: 12.5px;
       font-weight: 900;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.03em;
       text-transform: uppercase;
       color: #0f172a;
     }
     .title-banner span {
-      font-size: 10px;
+      font-size: 9px;
       color: #64748b;
       font-weight: 600;
       display: block;
-      margin-top: 3px;
+      margin-top: 1px;
     }
     .declaration {
       background: #fffbeb;
-      border: 1.5px solid #fde68a;
-      border-left: 4px solid #f59e0b;
-      padding: 11px 15px;
-      border-radius: 6px;
-      font-size: 12px;
-      line-height: 1.55;
+      border: 1px solid #fde68a;
+      border-left: 3.5px solid #f59e0b;
+      padding: 7px 10px;
+      border-radius: 5px;
+      font-size: 10px;
+      line-height: 1.4;
       text-align: justify;
       color: #78350f;
-      margin-bottom: 10px;
+      margin-bottom: 6px;
     }
     .declaration strong {
       color: #0f172a;
@@ -1539,92 +1707,114 @@ export default function FiscalView({
     .info-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 12px;
+      gap: 8px;
       background: #f8fafc;
-      border: 1.5px solid #e2e8f0;
-      border-radius: 6px;
-      padding: 11px 15px;
-      font-size: 11.5px;
-      line-height: 1.6;
-      margin-bottom: 10px;
+      border: 1px solid #e2e8f0;
+      border-radius: 5px;
+      padding: 7px 10px;
+      font-size: 10px;
+      line-height: 1.45;
+      margin-bottom: 6px;
     }
     .info-col-title {
       font-weight: 900;
-      font-size: 10px;
+      font-size: 9px;
       text-transform: uppercase;
       color: #475569;
       letter-spacing: 0.04em;
       border-bottom: 1px solid #e2e8f0;
-      padding-bottom: 3px;
-      margin-bottom: 5px;
+      padding-bottom: 2px;
+      margin-bottom: 3px;
     }
     .info-grid strong {
       color: #0f172a;
     }
-    .table-container {
-      margin-bottom: 10px;
-    }
-    .table-title {
-      font-size: 11px;
+    .section-title {
+      font-size: 9.5px;
       font-weight: 900;
       text-transform: uppercase;
-      color: #0f172a;
-      margin-bottom: 5px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 3px 6px;
+      border-radius: 4px;
+      margin-bottom: 3px;
       letter-spacing: 0.02em;
+    }
+    .section-title-pa {
+      background: #eff6ff;
+      color: #1e40af;
+      border: 1px solid #bfdbfe;
+    }
+    .section-title-ag {
+      background: #faf5ff;
+      color: #6b21a8;
+      border: 1px solid #e9d5ff;
     }
     table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 11px;
+      font-size: 9.5px;
+      margin-bottom: 5px;
     }
     th, td {
       border: 1px solid #cbd5e1;
-      padding: 7px 9px;
+      padding: 4px 6px;
     }
     th {
       background: #f1f5f9;
       font-weight: 800;
       text-transform: uppercase;
-      font-size: 10px;
+      font-size: 8.5px;
       color: #334155;
-      letter-spacing: 0.03em;
+      letter-spacing: 0.02em;
+    }
+    .consolidated-box {
+      background: #f8fafc;
+      border: 1.5px solid #cbd5e1;
+      border-radius: 6px;
+      padding: 6px 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
     }
     .obs-box {
       background: #f8fafc;
-      border: 1.5px solid #e2e8f0;
-      border-radius: 6px;
-      padding: 9px 13px;
-      font-size: 11px;
+      border: 1px solid #e2e8f0;
+      border-radius: 5px;
+      padding: 5px 8px;
+      font-size: 9.5px;
       color: #475569;
       font-style: italic;
-      margin-bottom: 10px;
+      margin-bottom: 5px;
     }
     .legal-notice {
-      font-size: 9.5px;
+      font-size: 8.5px;
       color: #64748b;
       text-align: justify;
-      line-height: 1.45;
-      margin-bottom: 15px;
+      line-height: 1.35;
+      margin-bottom: 8px;
       padding: 0 2px;
     }
     .signatures-area {
       margin-top: auto;
-      padding-top: 10px;
+      padding-top: 6px;
     }
     .signatures {
       display: grid;
       grid-template-columns: repeat(${additionalColabs.length > 2 ? 4 : (additionalColabs.length > 0 ? 3 + additionalColabs.length : 3)}, 1fr);
-      gap: 12px 14px;
+      gap: 8px 10px;
       text-align: center;
     }
     .sig-line {
       border-top: 1.5px solid #475569;
-      padding-top: 6px;
-      margin-top: 36px;
+      padding-top: 4px;
+      margin-top: 24px;
     }
     .sig-name {
       font-weight: 800;
-      font-size: 11px;
+      font-size: 10px;
       color: #0f172a;
       white-space: nowrap;
       overflow: hidden;
@@ -1632,7 +1822,7 @@ export default function FiscalView({
       display: block;
     }
     .sig-role {
-      font-size: 9.5px;
+      font-size: 8.5px;
       color: #64748b;
       text-transform: uppercase;
       font-family: monospace;
@@ -1641,28 +1831,28 @@ export default function FiscalView({
       margin-top: 1px;
     }
     .sig-cota {
-      font-size: 10px;
+      font-size: 9px;
       font-weight: 900;
       font-family: monospace;
       color: #065f46;
       background: #ecfdf5;
-      border: 1.5px solid #a7f3d0;
-      border-radius: 4px;
-      padding: 2px 6px;
+      border: 1px solid #a7f3d0;
+      border-radius: 3px;
+      padding: 1px 4px;
       display: inline-block;
-      margin-top: 5px;
+      margin-top: 3px;
       letter-spacing: 0.02em;
     }
     .sig-auth {
-      font-size: 9px;
+      font-size: 8px;
       font-weight: 600;
       color: #64748b;
       background: #f1f5f9;
       border: 1px solid #e2e8f0;
-      border-radius: 4px;
-      padding: 2px 6px;
+      border-radius: 3px;
+      padding: 1px 4px;
       display: inline-block;
-      margin-top: 5px;
+      margin-top: 3px;
     }
   </style>
 </head>
@@ -1693,7 +1883,7 @@ export default function FiscalView({
 
       <!-- Main Declaration -->
       <div class="declaration">
-        Eu, <strong>${valeToPrint.colaboradorName}</strong>, registrado na função de <strong>${valeToPrint.colaboradorRole}</strong>,${additionalColabsStatement} autorizo(amos) expressamente a empresa <strong>PAU BRASIL DISTRIBUIDORA LTDA</strong> a proceder com o desconto em folha de pagamento da importância líquida de <strong>R$ ${finalValeValue.toFixed(2)}</strong> (${finalValeValue.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}), referente a desvios físicos de estoque, faltas ou avarias constatadas no encerramento logístico do <strong>${valeToPrint.routeMap !== 'AVULSO' ? `Mapa de Carga nº ${valeToPrint.routeMap}` : 'Mapa de Carga Avulso'}</strong>.
+        Eu, <strong>${valeToPrint.colaboradorName}</strong>, registrado na função de <strong>${valeToPrint.colaboradorRole}</strong>,${additionalColabsStatement} autorizo(amos) expressamente a empresa <strong>PAU BRASIL DISTRIBUIDORA LTDA</strong> a proceder com o desconto em folha de pagamento da importância líquida de <strong>R$ ${finalValeValue.toFixed(2)}</strong> (${finalValeValue.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}), referente a desvios físicos de estoque, faltas de Produtos Acabados (P.A.) e/ou Ativos de Giro (A.G.) apurados no encerramento logístico do <strong>${valeToPrint.routeMap !== 'AVULSO' ? `Mapa de Carga nº ${valeToPrint.routeMap}` : 'Mapa de Carga Avulso'}</strong>.
       </div>
 
       <!-- Info Grid -->
@@ -1703,53 +1893,121 @@ export default function FiscalView({
           <div><strong>Mapa de Carga:</strong> <span style="font-family: monospace; font-weight: bold;">${valeToPrint.routeMap}</span></div>
           <div><strong>Placa do Veículo:</strong> <span style="font-family: monospace; text-transform: uppercase; font-weight: bold;">${vehiclePlate}</span></div>
           <div><strong>Data da Viagem:</strong> ${arrivalDateFormatted}</div>
-          <div><strong>Volumes / Quantidade:</strong> <span style="font-weight: bold;">${totalQty !== null ? `${totalQty} volumes/itens` : 'Conforme laudo'}</span></div>
+          <div><strong>Volumes Declarados:</strong> <span style="font-weight: bold;">${totalQty !== null ? `${totalQty} volumes/itens` : 'Conforme laudo'}</span></div>
         </div>
         <div>
           <div class="info-col-title">Equipe da Operação & Aferição</div>
-          <div><strong>Responsável:</strong> ${valeToPrint.colaboradorName} (${valeToPrint.colaboradorRole}${valeToPrint.colaboradorValor ? ` - Cota: R$ ${valeToPrint.colaboradorValor.toFixed(2)}` : ''})</div>
-          ${additionalColabs.length > 0 ? `<div><strong>Ajudantes / Co-responsáveis:</strong> ${additionalColabs.map(c => `${c.name} (${c.role}${c.valor ? ` - Cota: R$ ${c.valor.toFixed(2)}` : ''})`).join(', ')}</div>` : `<div><strong>Ajudante da Rota:</strong> ${helperName}</div>`}
+          <div><strong>Responsável Principal:</strong> ${valeToPrint.colaboradorName} (${valeToPrint.colaboradorRole}${valeToPrint.colaboradorValor ? ` - Cota: R$ ${valeToPrint.colaboradorValor.toFixed(2)}` : ''})</div>
+          ${additionalColabs.length > 0 ? `<div><strong>Co-responsáveis:</strong> ${additionalColabs.map(c => `${c.name} (${c.role}${c.valor ? ` - Cota: R$ ${c.valor.toFixed(2)}` : ''})`).join(', ')}</div>` : `<div><strong>Ajudante da Rota:</strong> ${helperName}</div>`}
           <div><strong>Conferente de Pátio:</strong> ${conferenteName}</div>
           <div><strong>Fiscal / Emissor:</strong> ${currentUser.name}</div>
         </div>
       </div>
 
-      <!-- Shortage Details -->
-      <div class="table-container">
-        <div class="table-title">
-          Demonstrativo de Itens em Falta / Desvios Constatados:
-        </div>
-        ${detailedShortages.length > 0 ? `
-          <table>
-            <thead>
-              <tr>
-                <th>Cód.</th>
-                <th>Descrição do Produto / Vasilhame</th>
-                <th style="text-align: center;">Faturado</th>
-                <th style="text-align: center;">Conferido</th>
-                <th style="text-align: center; color: #d97706;">Comodato</th>
-                <th style="text-align: center; color: #dc2626;">Falta</th>
-                <th style="text-align: right;">Custo Unit.</th>
-                <th style="text-align: right;">Subtotal</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${shortageRowsHtml}
-              ${hiddenRowHtml}
-              <tr style="background: #f1f5f9; font-weight: bold; border-top: 2px solid #cbd5e1;">
-                <td colspan="5" style="text-align: right; text-transform: uppercase; padding: 7px 9px;">Total do Desconto Autorizado:</td>
-                <td style="text-align: center; font-family: monospace; color: #dc2626; font-weight: bold; padding: 7px 9px;">-${detailedShortages.reduce((s, d) => s + d.diff, 0)} vol</td>
-                <td colspan="2" style="text-align: right; font-family: monospace; font-size: 13px; font-weight: 900; color: #dc2626; padding: 7px 9px;">R$ ${finalValeValue.toFixed(2)}</td>
-              </tr>
-            </tbody>
-          </table>
-        ` : `
-          <div style="background: #f8fafc; border: 1.5px solid #cbd5e1; border-radius: 6px; padding: 12px 15px; font-size: 12px;">
-            <div><strong>Descrição da Falta:</strong> ${valeToPrint.descricao}</div>
-            <div style="margin-top: 5px; font-weight: bold; color: #dc2626; font-size: 13px;">Valor Total Autorizado: R$ ${(Number(valeToPrint.valor) || 0).toFixed(2)}</div>
+      ${hasPA || hasAG ? `
+        <!-- TABELA 1: PRODUTOS ACABADOS (P.A.) -->
+        <div style="margin-bottom: 5px;">
+          <div class="section-title section-title-pa">
+            <span>📦 1. DEMONSTRATIVO DE PRODUTOS ACABADOS (P.A.) EM FALTA</span>
+            <span>Subtotal P.A.: R$ ${paTotalCost.toFixed(2)} (-${paTotalDiff} cx)</span>
           </div>
-        `}
-      </div>
+          ${paShortages.length > 0 ? `
+            <table>
+              <thead>
+                <tr>
+                  <th style="width: 55px;">Cód.</th>
+                  <th>Descrição do Produto Acabado</th>
+                  <th style="width: 45px; text-align: center;">Fat.</th>
+                  <th style="width: 45px; text-align: center;">Conf.</th>
+                  <th style="width: 45px; text-align: center; color: #d97706;">Comod.</th>
+                  <th style="width: 55px; text-align: center; color: #dc2626;">Falta</th>
+                  <th style="width: 65px; text-align: right;">Custo Unit.</th>
+                  <th style="width: 75px; text-align: right;">Subtotal</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${paRowsHtml}
+                ${hiddenPaHtml}
+                <tr style="background: #eff6ff; font-weight: bold; border-top: 1.5px solid #bfdbfe;">
+                  <td colspan="5" style="text-align: right; text-transform: uppercase; font-size: 8.5px; color: #1e40af;">Subtotal Faltas Produtos Acabados (P.A.):</td>
+                  <td style="text-align: center; font-family: monospace; color: #dc2626; font-weight: bold;">-${paTotalDiff} cx</td>
+                  <td colspan="2" style="text-align: right; font-family: monospace; font-size: 10.5px; font-weight: 900; color: #1e3a8a;">R$ ${paTotalCost.toFixed(2)}</td>
+                </tr>
+              </tbody>
+            </table>
+          ` : `
+            <div style="background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 4px; padding: 4px 8px; font-size: 8.5px; color: #64748b; font-style: italic; margin-bottom: 4px;">
+              ✓ Sem registro de faltas de Produtos Acabados (P.A.) apuradas nesta aferição física.
+            </div>
+          `}
+        </div>
+
+        <!-- TABELA 2: ATIVOS DE GIRO (A.G.) / VASILHAMES -->
+        <div style="margin-bottom: 5px;">
+          <div class="section-title section-title-ag">
+            <span>🔄 2. DEMONSTRATIVO DE ATIVOS DE GIRO (A.G.) / VASILHAMES EM FALTA</span>
+            <span>Subtotal A.G.: R$ ${agTotalCost.toFixed(2)} (-${agTotalDiff} un)</span>
+          </div>
+          ${agShortages.length > 0 ? `
+            <table>
+              <thead>
+                <tr>
+                  <th style="width: 55px;">Cód.</th>
+                  <th>Descrição do Vasilhame / Ativo</th>
+                  <th style="width: 45px; text-align: center;">Fat.</th>
+                  <th style="width: 45px; text-align: center;">Conf.</th>
+                  <th style="width: 45px; text-align: center; color: #d97706;">Comod.</th>
+                  <th style="width: 55px; text-align: center; color: #dc2626;">Falta</th>
+                  <th style="width: 65px; text-align: right;">Custo Unit.</th>
+                  <th style="width: 75px; text-align: right;">Subtotal</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${agRowsHtml}
+                ${hiddenAgHtml}
+                <tr style="background: #faf5ff; font-weight: bold; border-top: 1.5px solid #e9d5ff;">
+                  <td colspan="5" style="text-align: right; text-transform: uppercase; font-size: 8.5px; color: #6b21a8;">Subtotal Faltas Ativos de Giro (A.G.):</td>
+                  <td style="text-align: center; font-family: monospace; color: #dc2626; font-weight: bold;">-${agTotalDiff} un</td>
+                  <td colspan="2" style="text-align: right; font-family: monospace; font-size: 10.5px; font-weight: 900; color: #581c87;">R$ ${agTotalCost.toFixed(2)}</td>
+                </tr>
+              </tbody>
+            </table>
+          ` : `
+            <div style="background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 4px; padding: 4px 8px; font-size: 8.5px; color: #64748b; font-style: italic; margin-bottom: 4px;">
+              ✓ Sem registro de faltas de Ativos de Giro / Vasilhames (A.G.) apuradas nesta aferição física.
+            </div>
+          `}
+        </div>
+
+        <!-- QUADRO CONSOLIDADO DO MESMO VALE -->
+        <div class="consolidated-box">
+          <div>
+            <span style="font-size: 10px; font-weight: 900; text-transform: uppercase; color: #0f172a; display: block;">
+              Total Consolidado do Vale a Descontar:
+            </span>
+            <div style="display: flex; gap: 8px; margin-top: 2px;">
+              <span style="background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; font-size: 8.5px; font-weight: bold; padding: 1px 5px; border-radius: 3px;">
+                📦 P.A.: R$ ${paTotalCost.toFixed(2)} (-${paTotalDiff} cx)
+              </span>
+              <span style="background: #faf5ff; color: #6b21a8; border: 1px solid #e9d5ff; font-size: 8.5px; font-weight: bold; padding: 1px 5px; border-radius: 3px;">
+                🔄 A.G.: R$ ${agTotalCost.toFixed(2)} (-${agTotalDiff} un)
+              </span>
+              <span style="background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; font-size: 8.5px; font-weight: bold; padding: 1px 5px; border-radius: 3px;">
+                👥 Rateio: ${totalInvolvedColabs} colab.
+              </span>
+            </div>
+          </div>
+          <div style="text-align: right;">
+            <span style="font-size: 8.5px; color: #64748b; text-transform: uppercase; font-weight: bold; display: block;">Valor Total Geral</span>
+            <span style="font-size: 15px; font-family: monospace; font-weight: 900; color: #dc2626;">R$ ${finalValeValue.toFixed(2)}</span>
+          </div>
+        </div>
+      ` : `
+        <div style="background: #f8fafc; border: 1.5px solid #cbd5e1; border-radius: 5px; padding: 8px 12px; font-size: 10px; margin-bottom: 6px;">
+          <div><strong>Descrição da Falta:</strong> ${valeToPrint.descricao}</div>
+          <div style="margin-top: 4px; font-weight: bold; color: #dc2626; font-size: 12px;">Valor Total Autorizado: R$ ${(Number(valeToPrint.valor) || 0).toFixed(2)}</div>
+        </div>
+      `}
 
       ${valeToPrint.observacao ? `
         <div class="obs-box">
@@ -1839,6 +2097,417 @@ export default function FiscalView({
     }, 250);
   };
 
+  // Memoized filtered vales based on text search, category, and date filtering (specific day or range)
+  const filteredVales = React.useMemo(() => {
+    return vales.filter(v => {
+      // 1. Text search
+      if (valeSearchTerm.trim()) {
+        const q = valeSearchTerm.trim().toLowerCase();
+        const matchName = (v.colaboradorName || '').toLowerCase().includes(q);
+        const matchMap = (v.routeMap || '').toLowerCase().includes(q);
+        const matchDesc = (v.descricao || '').toLowerCase().includes(q);
+        const matchId = (v.id || '').toLowerCase().includes(q);
+        if (!matchName && !matchMap && !matchDesc && !matchId) return false;
+      }
+
+      // 2. Category filter
+      if (valeFilterCategory !== 'todos') {
+        const shortages = getValeAuditShortages(v);
+        if (valeFilterCategory === 'pa' && (!shortages.hasPA || shortages.hasAG)) return false;
+        if (valeFilterCategory === 'ag' && (!shortages.hasAG || shortages.hasPA)) return false;
+        if (valeFilterCategory === 'ambos' && (!shortages.hasPA || !shortages.hasAG)) return false;
+        if (valeFilterCategory === 'pendente' && v.status !== 'PENDENTE_ASSINATURA') return false;
+      }
+
+      // 3. Date filtering (Dia específico ou Entre datas)
+      const vDate = normalizeToYYYYMMDD(v.dataGeracao);
+      if (valesFilterDate) {
+        if (vDate !== valesFilterDate) return false;
+      } else {
+        if (valesFilterStartDate && vDate && vDate < valesFilterStartDate) return false;
+        if (valesFilterEndDate && vDate && vDate > valesFilterEndDate) return false;
+      }
+
+      return true;
+    });
+  }, [vales, valeSearchTerm, valeFilterCategory, valesFilterDate, valesFilterStartDate, valesFilterEndDate]);
+
+  // Generate and print official consolidated PDF report of all registered vales with separate PA and AG shortages
+  const exportValesSummaryPDF = (customValesList?: Vale[]) => {
+    const list = customValesList || filteredVales;
+    if (!list || list.length === 0) {
+      alert('Nenhum vale emitido disponível para o período/filtro selecionado.');
+      return;
+    }
+
+    let periodoLabel = 'Todas as Datas Registradas';
+    if (valesFilterDate) {
+      periodoLabel = `Data Específica: ${formatDateBR(valesFilterDate)}`;
+    } else if (valesFilterStartDate && valesFilterEndDate) {
+      periodoLabel = `Período: ${formatDateBR(valesFilterStartDate)} até ${formatDateBR(valesFilterEndDate)}`;
+    } else if (valesFilterStartDate) {
+      periodoLabel = `A partir de: ${formatDateBR(valesFilterStartDate)}`;
+    } else if (valesFilterEndDate) {
+      periodoLabel = `Até: ${formatDateBR(valesFilterEndDate)}`;
+    }
+
+    let iframe = document.getElementById('vales-summary-print-iframe') as HTMLIFrameElement;
+    if (!iframe) {
+      iframe = document.createElement('iframe');
+      iframe.id = 'vales-summary-print-iframe';
+      iframe.style.position = 'fixed';
+      iframe.style.right = '0';
+      iframe.style.bottom = '0';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = '0';
+      iframe.style.opacity = '0';
+      iframe.style.pointerEvents = 'none';
+      document.body.appendChild(iframe);
+    }
+
+    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (!doc) {
+      window.print();
+      return;
+    }
+
+    // Calculate aggregated metrics
+    let totalGeralDescontos = 0;
+    let totalGeralPA = 0;
+    let totalGeralAG = 0;
+    let totalQtdPA = 0;
+    let totalQtdAG = 0;
+    let pendentesCount = 0;
+    let assinadosCount = 0;
+    let compensadosCount = 0;
+
+    const enrichedVales = list.map(v => {
+      const shortages = getValeAuditShortages(v);
+      const valNum = Number(v.valor) || 0;
+      totalGeralDescontos += valNum;
+      totalGeralPA += shortages.paTotalCost;
+      totalGeralAG += shortages.agTotalCost;
+      totalQtdPA += shortages.paTotalDiff;
+      totalQtdAG += shortages.agTotalDiff;
+
+      if (v.status === 'PENDENTE_ASSINATURA') pendentesCount++;
+      else if (v.status === 'ASSINADO') assinadosCount++;
+      else if (v.status === 'COMPENSADO') compensadosCount++;
+
+      return {
+        vale: v,
+        shortages
+      };
+    });
+
+    const nowFormatted = new Date().toLocaleString('pt-BR');
+
+    const rowsHtml = enrichedVales.map(({ vale: v, shortages }) => {
+      const additional = v.colaboradoresAdicionais || [];
+      const colabDetails = `
+        <div style="font-weight: 700; color: #0f172a;">${v.colaboradorName}</div>
+        <div style="font-size: 8.5px; color: #64748b; font-family: monospace;">${v.colaboradorRole}${v.colaboradorValor ? ` (R$ ${v.colaboradorValor.toFixed(2)})` : ''}</div>
+        ${additional.map(c => `
+          <div style="font-size: 8.5px; color: #475569; margin-top: 1px;">
+            + ${c.name} <span style="font-family: monospace; color: #b45309;">(R$ ${(c.valor ?? 0).toFixed(2)})</span>
+          </div>
+        `).join('')}
+      `;
+
+      const paDetails = shortages.paShortages.length > 0 ? `
+        <div style="font-size: 8.5px; color: #1e3a8a; line-height: 1.25;">
+          ${shortages.paShortages.slice(0, 3).map(p => `
+            <div>• <strong>${p.diff}cx</strong> ${p.name} <span style="font-family: monospace; color: #64748b;">(R$ ${p.totalCost.toFixed(2)})</span></div>
+          `).join('')}
+          ${shortages.paShortages.length > 3 ? `<div style="color: #64748b; font-style: italic;">+ ${shortages.paShortages.length - 3} outros itens P.A.</div>` : ''}
+          <div style="margin-top: 2px; font-weight: 800; font-family: monospace; color: #1e40af; border-top: 1px dashed #bfdbfe; padding-top: 1px;">
+            Subtotal P.A.: R$ ${shortages.paTotalCost.toFixed(2)} (-${shortages.paTotalDiff} cx)
+          </div>
+        </div>
+      ` : `
+        <span style="font-size: 8.5px; color: #94a3b8; font-style: italic;">Sem falta P.A.</span>
+      `;
+
+      const agDetails = shortages.agShortages.length > 0 ? `
+        <div style="font-size: 8.5px; color: #6b21a8; line-height: 1.25;">
+          ${shortages.agShortages.slice(0, 3).map(a => `
+            <div>• <strong>${a.diff}x</strong> [${a.code}] ${a.name} <span style="font-family: monospace; color: #64748b;">(R$ ${a.totalCost.toFixed(2)})</span></div>
+          `).join('')}
+          ${shortages.agShortages.length > 3 ? `<div style="color: #64748b; font-style: italic;">+ ${shortages.agShortages.length - 3} outros ativos A.G.</div>` : ''}
+          <div style="margin-top: 2px; font-weight: 800; font-family: monospace; color: #6b21a8; border-top: 1px dashed #e9d5ff; padding-top: 1px;">
+            Subtotal A.G.: R$ ${shortages.agTotalCost.toFixed(2)} (-${shortages.agTotalDiff} un)
+          </div>
+        </div>
+      ` : `
+        <span style="font-size: 8.5px; color: #94a3b8; font-style: italic;">Sem falta A.G.</span>
+      `;
+
+      const statusBadge = v.status === 'COMPENSADO'
+        ? `<span style="background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; padding: 2px 5px; border-radius: 3px; font-weight: 800; font-size: 8px;">COMPENSADO</span>`
+        : v.status === 'ASSINADO'
+          ? `<span style="background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; padding: 2px 5px; border-radius: 3px; font-weight: 800; font-size: 8px;">ASSINADO</span>`
+          : `<span style="background: #fffbeb; color: #92400e; border: 1px solid #fde68a; padding: 2px 5px; border-radius: 3px; font-weight: 800; font-size: 8px;">PENDENTE</span>`;
+
+      return `
+        <tr style="border-bottom: 1px solid #e2e8f0; font-size: 9px;">
+          <td style="padding: 5px 6px; font-family: monospace; font-weight: bold; color: #0f172a; white-space: nowrap;">
+            #${v.id}
+            <div style="font-size: 8px; color: #64748b; font-weight: normal;">${new Date(v.dataGeracao + 'T00:00:00').toLocaleDateString('pt-BR')}</div>
+          </td>
+          <td style="padding: 5px 6px; font-family: monospace; font-weight: bold; color: #1e293b; white-space: nowrap;">
+            ${v.routeMap !== 'AVULSO' ? `Mapa ${v.routeMap}` : 'AVULSO'}
+            ${shortages.associatedAudit?.plate ? `<div style="font-size: 8px; color: #64748b;">Placa: ${shortages.associatedAudit.plate}</div>` : ''}
+          </td>
+          <td style="padding: 5px 6px; max-width: 170px;">${colabDetails}</td>
+          <td style="padding: 5px 6px; max-width: 210px; background: #fafcff;">${paDetails}</td>
+          <td style="padding: 5px 6px; max-width: 210px; background: #fdfcff;">${agDetails}</td>
+          <td style="padding: 5px 6px; text-align: right; font-family: monospace; font-weight: 900; font-size: 10.5px; color: #dc2626; white-space: nowrap;">
+            R$ ${(Number(v.valor) || 0).toFixed(2)}
+          </td>
+          <td style="padding: 5px 6px; text-align: center; white-space: nowrap;">${statusBadge}</td>
+        </tr>
+      `;
+    }).join('');
+
+    const html = `
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Relatório Geral de Vales e Descontos (P.A. e A.G.)</title>
+  <style>
+    @page {
+      size: A4 landscape;
+      margin: 8mm 10mm;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    html, body {
+      width: 100%;
+      background: #ffffff;
+      color: #0f172a;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 9.5px;
+      line-height: 1.35;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-bottom: 2.5px solid #0f172a;
+      padding-bottom: 8px;
+      margin-bottom: 10px;
+    }
+    .company-title {
+      font-size: 18px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: -0.01em;
+      color: #0f172a;
+    }
+    .company-sub {
+      font-size: 10px;
+      color: #475569;
+      font-family: monospace;
+      text-transform: uppercase;
+      margin-top: 1px;
+    }
+    .report-badge {
+      background: #f1f5f9;
+      border: 1.5px solid #cbd5e1;
+      border-radius: 5px;
+      padding: 5px 12px;
+      text-align: right;
+    }
+    .kpi-container {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .kpi-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 5px;
+      padding: 6px 10px;
+    }
+    .kpi-label {
+      font-size: 8.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: #64748b;
+      letter-spacing: 0.03em;
+    }
+    .kpi-value {
+      font-size: 13.5px;
+      font-weight: 900;
+      font-family: monospace;
+      color: #0f172a;
+      margin-top: 2px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 12px;
+    }
+    th {
+      background: #f1f5f9;
+      color: #334155;
+      font-weight: 800;
+      text-transform: uppercase;
+      font-size: 8.5px;
+      letter-spacing: 0.03em;
+      padding: 6px 6px;
+      border-top: 1px solid #cbd5e1;
+      border-bottom: 2px solid #94a3b8;
+    }
+    .signatures-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 20px;
+      margin-top: 25px;
+      text-align: center;
+      page-break-inside: avoid;
+    }
+    .sig-line {
+      border-top: 1.5px solid #475569;
+      padding-top: 4px;
+      margin-top: 24px;
+    }
+    .sig-name {
+      font-weight: 800;
+      font-size: 10px;
+      color: #0f172a;
+      display: block;
+    }
+    .sig-role {
+      font-size: 8.5px;
+      color: #64748b;
+      text-transform: uppercase;
+      font-family: monospace;
+      font-weight: 600;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div>
+    <!-- Header -->
+    <div class="header">
+      <div>
+        <div class="company-title">PAU BRASIL DISTRIBUIDORA LTDA</div>
+        <div class="company-sub">Gestão Logística de Retorno • Unidade Guarabira/PB • CD 04</div>
+        <div style="font-size: 11px; font-weight: 900; color: #b45309; text-transform: uppercase; margin-top: 3px;">
+          RELATÓRIO OFICIAL ANALÍTICO DE VALES E DESCONTOS EM FOLHA (P.A. & A.G.) • ${periodoLabel}
+        </div>
+      </div>
+      <div class="report-badge">
+        <div style="font-size: 8.5px; font-weight: bold; color: #64748b; text-transform: uppercase;">Emissão Oficial</div>
+        <div style="font-size: 11px; font-family: monospace; font-weight: 900; color: #0f172a;">${nowFormatted}</div>
+        <div style="font-size: 8.5px; color: #64748b; margin-top: 1px;">Operador: <strong>${currentUser.name}</strong></div>
+        <div style="font-size: 8.5px; color: #92400e; font-weight: 800; margin-top: 2px; background: #fef3c7; border: 1px solid #fde68a; padding: 2px 6px; border-radius: 3px; display: inline-block;">
+          ${periodoLabel}
+        </div>
+      </div>
+    </div>
+
+    <!-- KPIs -->
+    <div class="kpi-container">
+      <div class="kpi-card">
+        <div class="kpi-label">Vales Emitidos</div>
+        <div class="kpi-value">${list.length} registros</div>
+      </div>
+      <div class="kpi-card" style="border-left: 3px solid #dc2626;">
+        <div class="kpi-label">Total em Vales (R$)</div>
+        <div class="kpi-value" style="color: #dc2626;">R$ ${totalGeralDescontos.toFixed(2)}</div>
+      </div>
+      <div class="kpi-card" style="border-left: 3px solid #2563eb;">
+        <div class="kpi-label">Faltas Prod. Acabados (P.A.)</div>
+        <div class="kpi-value" style="color: #1e40af;">R$ ${totalGeralPA.toFixed(2)} <span style="font-size: 9.5px; font-weight: normal; color: #64748b;">(-${totalQtdPA} cx)</span></div>
+      </div>
+      <div class="kpi-card" style="border-left: 3px solid #7c3aed;">
+        <div class="kpi-label">Faltas Ativos Giro (A.G.)</div>
+        <div class="kpi-value" style="color: #6b21a8;">R$ ${totalGeralAG.toFixed(2)} <span style="font-size: 9.5px; font-weight: normal; color: #64748b;">(-${totalQtdAG} un)</span></div>
+      </div>
+      <div class="kpi-card" style="border-left: 3px solid #059669;">
+        <div class="kpi-label">Status dos Vales</div>
+        <div class="kpi-value" style="font-size: 11px; margin-top: 3px;">
+          <span style="color: #d97706;">${pendentesCount} Pendentes</span> • <span style="color: #059669;">${assinadosCount + compensadosCount} Finalizados</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Master Table -->
+    <table>
+      <thead>
+        <tr>
+          <th style="text-align: left; width: 65px;">Nº / Data</th>
+          <th style="text-align: left; width: 85px;">Mapa / Placa</th>
+          <th style="text-align: left; width: 170px;">Colaborador(es) & Rateio</th>
+          <th style="text-align: left; width: 220px; background: #eff6ff; color: #1e40af;">📦 Faltas Produtos Acabados (P.A.)</th>
+          <th style="text-align: left; width: 220px; background: #faf5ff; color: #6b21a8;">🔄 Faltas Ativos de Giro (A.G.)</th>
+          <th style="text-align: right; width: 95px;">Valor Total</th>
+          <th style="text-align: center; width: 80px;">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rowsHtml}
+        <tr style="background: #f1f5f9; font-weight: 900; border-top: 2.5px solid #0f172a; font-size: 10px;">
+          <td colspan="3" style="padding: 7px 6px; text-transform: uppercase;">TOTAIS GERAIS CONSOLIDADOS (${list.length} VALES):</td>
+          <td style="padding: 7px 6px; font-family: monospace; color: #1e40af;">R$ ${totalGeralPA.toFixed(2)} (-${totalQtdPA} cx)</td>
+          <td style="padding: 7px 6px; font-family: monospace; color: #6b21a8;">R$ ${totalGeralAG.toFixed(2)} (-${totalQtdAG} un)</td>
+          <td style="padding: 7px 6px; text-align: right; font-family: monospace; font-size: 12px; color: #dc2626;">R$ ${totalGeralDescontos.toFixed(2)}</td>
+          <td style="padding: 7px 6px; text-align: center; font-size: 8.5px; color: #475569;">100% AUDITADO</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div style="font-size: 8.5px; color: #64748b; line-height: 1.4; text-align: justify; margin-top: 6px;">
+      Este relatório reúne os vales de desconto emitidos com fundamento no Artigo 462, § 1º da CLT e nas políticas internas de aferição de retorno de rota da Pau Brasil Distribuidora Ltda. As faltas de Produtos Acabados (P.A.) e Ativos de Giro (A.G. - vasilhames e garrafeiras) foram conferidas fisicamente no retorno e conciliadas pelo fiscal de logística responsável.
+    </div>
+
+    <!-- Signatures -->
+    <div class="signatures-grid">
+      <div>
+        <div class="sig-line">
+          <span class="sig-name">${currentUser.name}</span>
+          <span class="sig-role">Fiscal de Logística (Emissão / Aferição)</span>
+        </div>
+      </div>
+      <div>
+        <div class="sig-line">
+          <span class="sig-name">Elisson Minervino</span>
+          <span class="sig-role">Gestão de Logística (Aprovação)</span>
+        </div>
+      </div>
+      <div>
+        <div class="sig-line">
+          <span class="sig-name">Departamento Pessoal / RH</span>
+          <span class="sig-role">Lançamento & Desconto em Folha</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+    `;
+
+    doc.open();
+    doc.write(html);
+    doc.close();
+
+    setTimeout(() => {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+    }, 250);
+  };
+
   // Vale Map mode: 'lista' (from maps with shortage) or 'manual' (type any map number)
   const [valeMapMode, setValeMapMode] = useState<'lista' | 'manual'>('lista');
   const [valeAssociatedInfo, setValeAssociatedInfo] = useState<{
@@ -1850,9 +2519,13 @@ export default function FiscalView({
     driverId?: string;
     plate?: string;
     totalValue?: number;
+    paTotal?: number;
+    agTotal?: number;
     description?: string;
     alreadyHasVale?: boolean;
     items?: Array<{ name: string; qty: number; unitCost: number; totalCost: number; isAsset: boolean }>;
+    paItems?: Array<{ name: string; qty: number; unitCost: number; totalCost: number }>;
+    agItems?: Array<{ name: string; qty: number; unitCost: number; totalCost: number }>;
   } | null>(null);
 
   // Dynamic helper to inspect and associate any map (manual or list) with audits and missing items
@@ -1874,8 +2547,12 @@ export default function FiscalView({
 
     if (matchingAudit) {
       let totalVal = 0;
+      let paTotal = 0;
+      let agTotal = 0;
       const parts: string[] = [];
       const itemDetails: Array<{ name: string; qty: number; unitCost: number; totalCost: number; isAsset: boolean }> = [];
+      const paDetails: Array<{ name: string; qty: number; unitCost: number; totalCost: number }> = [];
+      const agDetails: Array<{ name: string; qty: number; unitCost: number; totalCost: number }> = [];
 
       (matchingAudit.items || []).forEach(i => {
         const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : (i.physicalQty ?? 0);
@@ -1888,15 +2565,17 @@ export default function FiscalView({
           const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
           const subtotal = diff * unitCost;
           totalVal += subtotal;
+          paTotal += subtotal;
           const comodatoText = comodato > 0 ? ` (${comodato} em comodato deduzido)` : '';
           parts.push(`Falta de ${diff} cx de ${i.productDescription || 'Produto'}${comodatoText}`);
-          itemDetails.push({
+          const it = {
             name: i.productDescription || `Produto ${i.productCode}`,
             qty: diff,
             unitCost,
-            totalCost: subtotal,
-            isAsset: false
-          });
+            totalCost: subtotal
+          };
+          itemDetails.push({ ...it, isAsset: false });
+          paDetails.push(it);
         }
       });
 
@@ -1913,17 +2592,19 @@ export default function FiscalView({
           const unitCost = getAssetUnitCost(a.assetId, a.assetName, a.cost);
           const subtotal = diff * unitCost;
           totalVal += subtotal;
+          agTotal += subtotal;
           const comodatoText = comodato > 0 ? ` (${comodato} em comodato deduzido)` : '';
           const code = getAssetCode(a.assetId, a.assetName);
           const name = a.assetName || getAssetCanonicalName(code) || 'Ativo de Giro';
           parts.push(`Falta de ${diff}x [${code}] ${name}${comodatoText}`);
-          itemDetails.push({
+          const it = {
             name: `[${code}] ${name}`,
             qty: diff,
             unitCost,
-            totalCost: subtotal,
-            isAsset: true
-          });
+            totalCost: subtotal
+          };
+          itemDetails.push({ ...it, isAsset: true });
+          agDetails.push(it);
         }
       });
 
@@ -1942,9 +2623,13 @@ export default function FiscalView({
         driverId: matchingAudit.driverId || matchedRoute?.driverId,
         plate,
         totalValue: totalVal,
+        paTotal,
+        agTotal,
         description: parts.join(' e ') || `Conferência do mapa ${matchingAudit.routeMap || raw} sem divergências de falta.`,
         alreadyHasVale,
-        items: itemDetails
+        items: itemDetails,
+        paItems: paDetails,
+        agItems: agDetails
       };
 
       setValeAssociatedInfo(info);
@@ -1997,9 +2682,13 @@ export default function FiscalView({
         driverId: matchedDriver?.id || matchedRoute.driverId,
         plate: matchedRoute.plate || '---',
         totalValue: 0,
+        paTotal: 0,
+        agTotal: 0,
         description: `Mapa ${raw} localizado na grade de rotas (sem divergência cadastrada).`,
         alreadyHasVale,
-        items: []
+        items: [],
+        paItems: [],
+        agItems: []
       };
       setValeAssociatedInfo(info);
       if (autoFill && info.driverId) {
@@ -2036,9 +2725,13 @@ export default function FiscalView({
       driverId: undefined,
       plate: undefined,
       totalValue: 0,
+      paTotal: 0,
+      agTotal: 0,
       description: `Mapa ${raw} manual (avulso). Preencha o colaborador, valor e motivo.`,
       alreadyHasVale: (vales || []).some(v => (v.routeMap || '').trim().toUpperCase() === norm || (cleanNum && normalizeMapCode(v.routeMap) === cleanNum)),
-      items: []
+      items: [],
+      paItems: [],
+      agItems: []
     };
     setValeAssociatedInfo(info);
     return info;
@@ -2052,6 +2745,10 @@ export default function FiscalView({
       driverName: string;
       plate: string;
       totalShortageValue: number;
+      paValue: number;
+      agValue: number;
+      paCount: number;
+      agCount: number;
       description: string;
       missingCount: number;
       alreadyHasVale: boolean;
@@ -2067,6 +2764,10 @@ export default function FiscalView({
       if (seen.has(key)) return;
 
       let totalVal = 0;
+      let paVal = 0;
+      let agVal = 0;
+      let paCount = 0;
+      let agCount = 0;
       const parts: string[] = [];
       const itemDetails: Array<{ name: string; qty: number; unitCost: number; totalCost: number; isAsset: boolean }> = [];
 
@@ -2081,6 +2782,8 @@ export default function FiscalView({
           const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
           const subtotal = diff * unitCost;
           totalVal += subtotal;
+          paVal += subtotal;
+          paCount += diff;
           parts.push(`Falta de ${diff} cx de ${i.productDescription || 'Produto'}`);
           itemDetails.push({
             name: i.productDescription || `SKU ${i.productCode}`,
@@ -2105,6 +2808,8 @@ export default function FiscalView({
           const unitCost = getAssetUnitCost(a.assetId, a.assetName, a.cost);
           const subtotal = diff * unitCost;
           totalVal += subtotal;
+          agVal += subtotal;
+          agCount += diff;
           const code = getAssetCode(a.assetId, a.assetName);
           const name = a.assetName || getAssetCanonicalName(code) || 'Ativo de Giro';
           parts.push(`Falta de ${diff}x [${code}] ${name}`);
@@ -2132,6 +2837,10 @@ export default function FiscalView({
           driverName,
           plate,
           totalShortageValue: totalVal,
+          paValue: paVal,
+          agValue: agVal,
+          paCount,
+          agCount,
           description: parts.join(' e ') || `Faltas encontradas no mapa ${rawMap}`,
           missingCount: itemDetails.length,
           alreadyHasVale,
@@ -2150,6 +2859,10 @@ export default function FiscalView({
       if (!audit) return;
 
       let totalVal = 0;
+      let paVal = 0;
+      let agVal = 0;
+      let paCount = 0;
+      let agCount = 0;
       const parts: string[] = [];
       const itemDetails: Array<{ name: string; qty: number; unitCost: number; totalCost: number; isAsset: boolean }> = [];
 
@@ -2164,6 +2877,8 @@ export default function FiscalView({
           const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
           const subtotal = diff * unitCost;
           totalVal += subtotal;
+          paVal += subtotal;
+          paCount += diff;
           parts.push(`Falta de ${diff} cx de ${i.productDescription || 'Produto'}`);
           itemDetails.push({
             name: i.productDescription || `SKU ${i.productCode}`,
@@ -2188,6 +2903,8 @@ export default function FiscalView({
           const unitCost = getAssetUnitCost(a.assetId, a.assetName, a.cost);
           const subtotal = diff * unitCost;
           totalVal += subtotal;
+          agVal += subtotal;
+          agCount += diff;
           const code = getAssetCode(a.assetId, a.assetName);
           const name = a.assetName || getAssetCanonicalName(code) || 'Ativo de Giro';
           parts.push(`Falta de ${diff}x [${code}] ${name}`);
@@ -2213,6 +2930,10 @@ export default function FiscalView({
           driverName,
           plate: r.plate || '---',
           totalShortageValue: totalVal,
+          paValue: paVal,
+          agValue: agVal,
+          paCount,
+          agCount,
           description: parts.join(' e ') || `Faltas encontradas no mapa ${rawMap}`,
           missingCount: itemDetails.length,
           alreadyHasVale,
@@ -2563,6 +3284,7 @@ export default function FiscalView({
       let mapIndex = headers.findIndex(h => h.includes('mapa') || h.includes('nro do mapa') || h.includes('nro. do mapa') || h.includes('número do mapa') || h.includes('numero do mapa') || h.includes('cod.mapa') || h.includes('cód.mapa'));
       let plateIndex = headers.findIndex(h => h.includes('placa') || h.includes('veiculo') || h.includes('veículo') || h.includes('cod.veiculo') || h.includes('placa do veículo'));
       let driverIndex = headers.findIndex(h => h.includes('motorista') || h.includes('condutor') || h.includes('matricula') || h.includes('matr') || h.includes('nome do motorista') || h.includes('cód.motorista') || h.includes('cod.motorista'));
+      let dateIndex = headers.findIndex(h => h.includes('dt.saida') || h.includes('dt_saida') || h.includes('data da rota') || h.includes('data rota') || h.includes('dt.rota') || h === 'data');
 
       // Fallback index-based coordinates (G, M, O) if headers not found
       if (mapIndex === -1) mapIndex = 6;
@@ -2583,6 +3305,9 @@ export default function FiscalView({
         const plateClean = rawPlate.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
 
         if (!mapCode) continue;
+
+        const rawDateVal = (dateIndex !== -1 && cols[dateIndex]) ? cols[dateIndex].trim() : '';
+        const rowRouteDate = rawDateVal ? (normalizeToYYYYMMDD(rawDateVal) || routeImportDate) : routeImportDate;
 
         // Discard route map if both Column L (index 11) and Column M (index 12 / plateIndex) are empty.
         // ONLY perform this check if we are using the fallback 15-column Pau Brasil spreadsheet format (where mapIndex is 6, plateIndex is 12)
@@ -2654,7 +3379,7 @@ export default function FiscalView({
           plate: plateClean,
           driverId: matchedDriverId,
           driverName: matchedDriverName,
-          routeDate: routeImportDate,
+          routeDate: rowRouteDate,
           status: 'pendente' as const,
           importedAt: nowISO,
           updatedAt: nowISO,
@@ -2923,6 +3648,23 @@ export default function FiscalView({
     // Must be in conferido_fisico or recontagem_finalizada to be conciliated
     if (a.status !== 'conferido_fisico' && a.status !== 'recontagem_finalizada') return false;
 
+    // Exclude if another audit session for the same map and date is ALREADY finalized
+    const normA = normalizeMapCode(a.routeMap).toUpperCase();
+    const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+    const hasAlreadyFinished = audits.some(other => {
+      if (other.id === a.id) return false;
+      const isFinished = (other.status === 'finalizado_ok' || other.status === 'finalizado_divergente' || (other as any).pdfDownloaded === true || (other as any).surplusFlowStatus === 'BAIXADO') && !other.reopeningRequested;
+      if (!isFinished) return false;
+
+      const normOther = normalizeMapCode(other.routeMap).toUpperCase();
+      const otherDate = other.arrivalDate || other.routeDate || other.endTime?.split('T')[0] || other.startTime?.split('T')[0];
+      if (aDate && otherDate && aDate !== otherDate) return false;
+      const sameMap = normOther === normA || (other.unifiedMaps && other.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normA));
+      return sameMap;
+    });
+
+    if (hasAlreadyFinished) return false;
+
     return true;
   });
 
@@ -2943,10 +3685,14 @@ export default function FiscalView({
 
   // Memoized process metrics for "Monitoramento Integrado de Processos"
   const processProgressMetrics = React.useMemo(() => {
-    const isAwaitingConciliation = (mapCode: string) => {
+    const isAwaitingConciliation = (mapCode: string, routeDate?: string) => {
       const normR = normalizeMapCode(mapCode).toUpperCase();
       const upperR = mapCode.trim().toUpperCase();
       return pendingAudits.some(a => {
+        if (routeDate) {
+          const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+          if (aDate && aDate !== routeDate) return false;
+        }
         const normA = normalizeMapCode(a.routeMap).toUpperCase();
         const upperA = a.routeMap.trim().toUpperCase();
         return normA === normR || upperA === upperR || (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normR || m.trim().toUpperCase() === upperR));
@@ -2957,7 +3703,7 @@ export default function FiscalView({
       r.status !== 'fechado' && 
       r.status !== 'em_analise' && 
       !isRouteClosed(r.routeMap, r.routeDate) &&
-      !isAwaitingConciliation(r.routeMap)
+      !isAwaitingConciliation(r.routeMap, r.routeDate)
     );
 
     const standaloneActiveAudits = audits.filter(a => {
@@ -3021,19 +3767,6 @@ export default function FiscalView({
     }
   };
 
-  const formatDateBR = (dateStr?: string) => {
-    if (!dateStr) return '-';
-    try {
-      const parts = dateStr.split('T')[0].split('-');
-      if (parts.length === 3) {
-        return `${parts[2]}/${parts[1]}/${parts[0]}`;
-      }
-      return new Date(dateStr).toLocaleDateString('pt-BR');
-    } catch (e) {
-      return dateStr;
-    }
-  };
-
   interface ExportRecord {
     map: string;
     plate: string;
@@ -3042,10 +3775,13 @@ export default function FiscalView({
     type: 'PA' | 'AG';
     itemCode?: string;
     itemDescription: string;
+    unit: string;
     deviationType: 'SOBRA' | 'FALTA';
     fiscalQty: number;
     physicalQty: number;
     divergence: number;
+    unitPrice: number;
+    totalValue: number;
     prazoStatus?: string;
     isWithin30Days?: boolean;
     daysElapsed?: number;
@@ -3055,135 +3791,50 @@ export default function FiscalView({
     destination?: string;
     valeEmitido?: string;
     status: string;
+    auditId?: string;
   }
 
   const getUnresolvedDiscrepancyRecords = (): ExportRecord[] => {
-    const discrepantAudits = (audits || []).filter(audit => {
-      if (!audit) return false;
-      const hasProductDiff = (audit.items || []).some(item => {
-        const phys = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
-        const fisc = item.fiscalQty ?? 0;
-        const comodato = item.comodatoQty ?? 0;
-        const recolha = item.recolhaQty ?? 0;
-        return (phys + comodato - recolha) !== fisc;
-      });
-      const hasAssetDiff = (audit.assets || []).some(asset => {
-        const phys = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
-        const fisc = asset.fiscalQty ?? 0;
-        const comodato = asset.comodatoQty ?? 0;
-        const recolha = asset.recolhaQty ?? 0;
-        return phys !== (fisc - comodato + recolha);
-      });
-
-      const hasProductSurplus = (audit.items || []).some(i => {
-        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-        const fisc = i.fiscalQty ?? 0;
-        const comodato = i.comodatoQty ?? 0;
-        const recolha = i.recolhaQty ?? 0;
-        return (phys + comodato - recolha) > fisc;
-      });
-      const hasAssetSurplus = (audit.assets || []).some(a => {
-        const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-        const fisc = a.fiscalQty ?? 0;
-        const comodato = a.comodatoQty ?? 0;
-        const recolha = a.recolhaQty ?? 0;
-        return (phys - fisc + comodato - recolha) > 0;
-      });
-      const hasSurplus = hasProductSurplus || hasAssetSurplus;
-
-      const hasProductDeficit = (audit.items || []).some(i => {
-        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-        const fisc = i.fiscalQty ?? 0;
-        const comodato = i.comodatoQty ?? 0;
-        const recolha = i.recolhaQty ?? 0;
-        return (phys + comodato - recolha) < fisc;
-      });
-      const hasAssetDeficit = (audit.assets || []).some(a => {
-        const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-        const fisc = a.fiscalQty ?? 0;
-        const comodato = a.comodatoQty ?? 0;
-        const recolha = a.recolhaQty ?? 0;
-        return (phys - fisc + comodato - recolha) < 0;
-      });
-      const hasDeficit = hasProductDeficit || hasAssetDeficit;
-
-      const unresolvedSurplus = hasSurplus && !(
-        audit.surplusFlowStatus === 'ENVIADO' || 
-        audit.surplusFlowStatus === 'BAIXADO' || 
-        audit.surplusActionStatus === 'baixado_direto' ||
-        audit.surplusActionStatus === 'enviado_cliente'
-      );
-
-      const unresolvedDeficit = hasDeficit && !(
-        audit.deficitActionStatus === 'baixado_direto' ||
-        (vales || []).some(v => v.auditId === audit.id)
-      );
-
-      if (!unresolvedSurplus && !unresolvedDeficit) {
-        return false;
-      }
-      
-      if (subTabDivergencias === 'pa') return hasProductDiff;
-      if (subTabDivergencias === 'ag') return hasAssetDiff;
-      return hasProductDiff || hasAssetDiff;
-    });
-
-    const filteredAudits = discrepantAudits.filter(audit => {
-      if (filterNB.trim()) {
-        const nbQuery = filterNB.trim().toLowerCase();
-        const hasMatchedNB = (audit.clientCodeNB || '').toLowerCase().includes(nbQuery) ||
-          (audit.routeMap || '').toLowerCase().includes(nbQuery) ||
-          (audit.plate || '').toLowerCase().includes(nbQuery);
-        if (!hasMatchedNB) return false;
-      }
-
-      if (filterDate) {
-        const matchesDate = audit.arrivalDate === filterDate || audit.deliveryDate === filterDate;
-        if (!matchesDate) return false;
-      }
-
-      if (filterType !== 'all') {
-        const hasSurplus = (audit.items || []).some(i => {
-          const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-          const fisc = i.fiscalQty ?? 0;
-          const comodato = i.comodatoQty ?? 0;
-          const recolha = i.recolhaQty ?? 0;
-          return (phys - fisc + comodato - recolha) > 0;
-        }) || (audit.assets || []).some(a => {
-          const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-          const fisc = a.fiscalQty ?? 0;
-          const comodato = a.comodatoQty ?? 0;
-          const recolha = a.recolhaQty ?? 0;
-          return (phys - fisc + comodato - recolha) > 0;
-        });
-
-        const hasDeficit = (audit.items || []).some(i => {
-          const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-          const fisc = i.fiscalQty ?? 0;
-          const comodato = i.comodatoQty ?? 0;
-          const recolha = i.recolhaQty ?? 0;
-          return (phys - fisc + comodato - recolha) < 0;
-        }) || (audit.assets || []).some(a => {
-          const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-          const fisc = a.fiscalQty ?? 0;
-          const comodato = a.comodatoQty ?? 0;
-          const recolha = a.recolhaQty ?? 0;
-          return (phys - fisc + comodato - recolha) < 0;
-        });
-
-        if (filterType === 'sobra' && !hasSurplus) return false;
-        if (filterType === 'falta' && !hasDeficit) return false;
-      }
-
-      return true;
-    });
+    const isMaster = sobrasViewMode === 'master';
+    const normFilterDate = filterDate ? normalizeToYYYYMMDD(filterDate) : '';
+    const normFilterStartDate = filterStartDate ? normalizeToYYYYMMDD(filterStartDate) : '';
+    const normFilterEndDate = filterEndDate ? normalizeToYYYYMMDD(filterEndDate) : '';
 
     const records: ExportRecord[] = [];
 
-    filteredAudits.forEach(audit => {
+    (audits || []).forEach(audit => {
+      if (!audit) return;
+
+      const rawDate = audit.arrivalDate || audit.routeDate || (audit.startTime ? audit.startTime.split('T')[0] : '') || audit.deliveryDate;
+      const auditDateNorm = normalizeToYYYYMMDD(rawDate);
+      const deliveryDateNorm = normalizeToYYYYMMDD(audit.deliveryDate);
+
+      // 1. Calendarized Date Filters
+      if (normFilterDate) {
+        const matchesDate = auditDateNorm === normFilterDate || deliveryDateNorm === normFilterDate;
+        if (!matchesDate) return;
+      }
+      if (normFilterStartDate) {
+        if (!auditDateNorm || auditDateNorm < normFilterStartDate) return;
+      }
+      if (normFilterEndDate) {
+        if (!auditDateNorm || auditDateNorm > normFilterEndDate) return;
+      }
+
+      // 2. Text Search Filter (Audit level)
       const driverName = getDriverName(audit.driverId);
-      
-      const arrivalDateObj = new Date((audit.arrivalDate || new Date().toISOString().split('T')[0]) + 'T00:00:00');
+      if (filterNB.trim()) {
+        const query = filterNB.trim().toLowerCase();
+        const hasMatchedNB = (audit.clientCodeNB || '').toLowerCase().includes(query) ||
+          (audit.routeMap || '').toLowerCase().includes(query) ||
+          (audit.plate || '').toLowerCase().includes(query) ||
+          driverName.toLowerCase().includes(query) ||
+          (audit.items || []).some(i => (i.productCode || '').toLowerCase().includes(query) || (i.productDescription || '').toLowerCase().includes(query)) ||
+          (audit.assets || []).some(a => (a.assetId || '').toLowerCase().includes(query) || (a.assetName || '').toLowerCase().includes(query));
+        if (!hasMatchedNB) return;
+      }
+
+      const arrivalDateObj = new Date((auditDateNorm || getTodayYYYYMMDD()) + 'T00:00:00');
       const daysElapsed = Math.floor((new Date().getTime() - arrivalDateObj.getTime()) / (1000 * 60 * 60 * 24));
       const isWithin30Days = daysElapsed <= 30;
       const prazoStatus = audit.surplusFlowStatus === 'ENVIADO' 
@@ -3206,111 +3857,81 @@ export default function FiscalView({
           ? 'DATA ALINHADA' 
           : (audit.surplusFlowStatus === 'ENCAMINHADO' ? 'AGUARDANDO GESTOR' : 'PENDENTE'));
 
-      const hasProductSurplus = (audit.items || []).some(i => {
-        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-        const fisc = i.fiscalQty ?? 0;
-        const comodato = i.comodatoQty ?? 0;
-        const recolha = i.recolhaQty ?? 0;
-        return (phys - fisc + comodato - recolha) > 0;
-      });
-      const hasAssetSurplus = (audit.assets || []).some(a => {
-        const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-        const fisc = a.fiscalQty ?? 0;
-        const comodato = a.comodatoQty ?? 0;
-        const recolha = a.recolhaQty ?? 0;
-        return (phys - fisc + comodato - recolha) > 0;
-      });
-      const hasSurplus = hasProductSurplus || hasAssetSurplus;
-
-      const hasProductDeficit = (audit.items || []).some(i => {
-        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-        const fisc = i.fiscalQty ?? 0;
-        const comodato = i.comodatoQty ?? 0;
-        const recolha = i.recolhaQty ?? 0;
-        return (phys - fisc + comodato - recolha) < 0;
-      });
-      const hasAssetDeficit = (audit.assets || []).some(a => {
-        const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-        const fisc = a.fiscalQty ?? 0;
-        const comodato = a.comodatoQty ?? 0;
-        const recolha = a.recolhaQty ?? 0;
-        return (phys - fisc + comodato - recolha) < 0;
-      });
-      const hasDeficit = hasProductDeficit || hasAssetDeficit;
-
-      const unresolvedSurplus = hasSurplus && !(
-        audit.surplusFlowStatus === 'ENVIADO' || 
-        audit.surplusFlowStatus === 'BAIXADO' || 
-        audit.surplusActionStatus === 'baixado_direto' ||
-        audit.surplusActionStatus === 'enviado_cliente'
-      );
-
-      const unresolvedDeficit = hasDeficit && !(
-        audit.deficitActionStatus === 'baixado_direto' ||
-        (vales || []).some(v => v.auditId === audit.id)
-      );
-
+      // Process PA items
       if (subTabDivergencias === 'pa' || subTabDivergencias === 'all') {
         (audit.items || []).forEach(item => {
           const phys = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
-          const fisc = item.fiscalQty ?? 0;
+          const fisc = item.fiscalQty !== undefined ? item.fiscalQty : (item.expectedQty ?? 0);
           const comodato = item.comodatoQty ?? 0;
           const recolha = item.recolhaQty ?? 0;
           const fiscExpected = fisc - comodato + recolha;
           const diff = phys - fiscExpected;
 
-          if (diff > 0 && unresolvedSurplus && (filterType === 'all' || filterType === 'sobra')) {
-            records.push({
-              map: audit.routeMap,
-              plate: audit.plate,
-              driverName,
-              arrivalDate: audit.arrivalDate,
-              type: 'PA',
-              itemCode: item.productCode || '',
-              itemDescription: item.productDescription,
-              deviationType: 'SOBRA',
-              fiscalQty: fiscExpected,
-              physicalQty: phys,
-              divergence: diff,
-              prazoStatus,
-              isWithin30Days,
-              daysElapsed,
-              surplusFlowStatus: flowStatus,
-              clientCodeNB: clientNB,
-              deliveryDate: alinhadaData,
-              destination: destinoOp,
-              valeEmitido,
-              status: 'Sobra não tratada'
-            });
-          } else if (diff < 0 && unresolvedDeficit && (filterType === 'all' || filterType === 'falta')) {
-            records.push({
-              map: audit.routeMap,
-              plate: audit.plate,
-              driverName,
-              arrivalDate: audit.arrivalDate,
-              type: 'PA',
-              itemCode: item.productCode || '',
-              itemDescription: item.productDescription,
-              deviationType: 'FALTA',
-              fiscalQty: fisc,
-              physicalQty: phys,
-              divergence: diff,
-              prazoStatus,
-              isWithin30Days,
-              daysElapsed,
-              surplusFlowStatus: flowStatus,
-              clientCodeNB: clientNB,
-              deliveryDate: alinhadaData,
-              destination: destinoOp,
-              valeEmitido,
-              status: 'Falta não tratada'
-            });
+          if (diff === 0) return;
+
+          const isSobra = diff > 0;
+          const isFalta = diff < 0;
+
+          // Strict Deviation Filter Check
+          if (filterType === 'sobra' && !isSobra) return;
+          if (filterType === 'falta' && !isFalta) return;
+
+          // Operational Mode resolution check
+          if (!isMaster) {
+            if (isSobra && (
+              audit.surplusFlowStatus === 'ENVIADO' || 
+              audit.surplusFlowStatus === 'BAIXADO' || 
+              audit.surplusActionStatus === 'baixado_direto' ||
+              audit.surplusActionStatus === 'enviado_cliente'
+            )) {
+              return;
+            }
+            if (isFalta && audit.deficitActionStatus === 'baixado_direto') {
+              return;
+            }
           }
+
+          const prodInfo = products.find(p => p.code === item.productCode);
+          const unit = (item as any).unit || prodInfo?.unit || 'CX';
+          const unitPrice = getSkuClosedPrice(item.productCode, item.cost || 45.0);
+          const totalValue = Math.abs(diff) * unitPrice;
+
+          records.push({
+            map: audit.routeMap,
+            plate: audit.plate,
+            driverName,
+            arrivalDate: auditDateNorm || audit.arrivalDate,
+            type: 'PA',
+            itemCode: item.productCode || '',
+            itemDescription: item.productDescription || `SKU ${item.productCode}`,
+            unit,
+            deviationType: isSobra ? 'SOBRA' : 'FALTA',
+            fiscalQty: fiscExpected,
+            physicalQty: phys,
+            divergence: diff,
+            unitPrice,
+            totalValue,
+            prazoStatus,
+            isWithin30Days,
+            daysElapsed,
+            surplusFlowStatus: flowStatus,
+            clientCodeNB: clientNB,
+            deliveryDate: alinhadaData,
+            destination: destinoOp,
+            valeEmitido,
+            status: isSobra 
+              ? (audit.surplusFlowStatus === 'ENVIADO' ? 'Enviado ao Cliente' : 'Sobra Pendente')
+              : (associatedVale ? 'Vale Emitido' : 'Falta Pendente'),
+            auditId: audit.id
+          });
         });
       }
 
+      // Process AG assets
       if (subTabDivergencias === 'ag' || subTabDivergencias === 'all') {
-        audit.assets.forEach(asset => {
+        (audit.assets || []).forEach(asset => {
+          if (isExemptAsset(asset.assetId, asset.assetName)) return;
+
           const phys = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
           const fisc = asset.fiscalQty ?? 0;
           const comodato = asset.comodatoQty ?? 0;
@@ -3318,55 +3939,76 @@ export default function FiscalView({
           const fiscExpected = fisc - comodato + recolha;
           const diff = phys - fiscExpected;
 
-          if (diff > 0 && unresolvedSurplus && (filterType === 'all' || filterType === 'sobra')) {
-            records.push({
-              map: audit.routeMap,
-              plate: audit.plate,
-              driverName,
-              arrivalDate: audit.arrivalDate,
-              type: 'AG',
-              itemCode: asset.assetId || '',
-              itemDescription: asset.assetName,
-              deviationType: 'SOBRA',
-              fiscalQty: fiscExpected,
-              physicalQty: phys,
-              divergence: diff,
-              prazoStatus,
-              isWithin30Days,
-              daysElapsed,
-              surplusFlowStatus: flowStatus,
-              clientCodeNB: clientNB,
-              deliveryDate: alinhadaData,
-              destination: destinoOp,
-              valeEmitido,
-              status: 'Sobra não tratada'
-            });
-          } else if (diff < 0 && unresolvedDeficit && (filterType === 'all' || filterType === 'falta')) {
-            records.push({
-              map: audit.routeMap,
-              plate: audit.plate,
-              driverName,
-              arrivalDate: audit.arrivalDate,
-              type: 'AG',
-              itemCode: asset.assetId || '',
-              itemDescription: asset.assetName,
-              deviationType: 'FALTA',
-              fiscalQty: fiscExpected,
-              physicalQty: phys,
-              divergence: diff,
-              prazoStatus,
-              isWithin30Days,
-              daysElapsed,
-              surplusFlowStatus: flowStatus,
-              clientCodeNB: clientNB,
-              deliveryDate: alinhadaData,
-              destination: destinoOp,
-              valeEmitido,
-              status: 'Falta não tratada'
-            });
+          if (diff === 0) return;
+
+          const isSobra = diff > 0;
+          const isFalta = diff < 0;
+
+          // Strict Deviation Filter Check
+          if (filterType === 'sobra' && !isSobra) return;
+          if (filterType === 'falta' && !isFalta) return;
+
+          // Operational Mode resolution check
+          if (!isMaster) {
+            if (isSobra && (
+              audit.surplusFlowStatus === 'ENVIADO' || 
+              audit.surplusFlowStatus === 'BAIXADO' || 
+              audit.surplusActionStatus === 'baixado_direto' ||
+              audit.surplusActionStatus === 'enviado_cliente'
+            )) {
+              return;
+            }
+            if (isFalta && audit.deficitActionStatus === 'baixado_direto') {
+              return;
+            }
           }
+
+          const unit = (asset as any).unit || 'UN';
+          const unitPrice = getAssetUnitCost(asset.assetId, asset.assetName, asset.cost);
+          const totalValue = Math.abs(diff) * unitPrice;
+          const assetCode = getAssetCode(asset.assetId, asset.assetName);
+          const assetName = asset.assetName || getAssetCanonicalName(assetCode) || 'Ativo de Giro';
+
+          records.push({
+            map: audit.routeMap,
+            plate: audit.plate,
+            driverName,
+            arrivalDate: auditDateNorm || audit.arrivalDate,
+            type: 'AG',
+            itemCode: assetCode,
+            itemDescription: assetName,
+            unit,
+            deviationType: isSobra ? 'SOBRA' : 'FALTA',
+            fiscalQty: fiscExpected,
+            physicalQty: phys,
+            divergence: diff,
+            unitPrice,
+            totalValue,
+            prazoStatus,
+            isWithin30Days,
+            daysElapsed,
+            surplusFlowStatus: flowStatus,
+            clientCodeNB: clientNB,
+            deliveryDate: alinhadaData,
+            destination: destinoOp,
+            valeEmitido,
+            status: isSobra 
+              ? (audit.surplusFlowStatus === 'ENVIADO' ? 'Enviado ao Cliente' : 'Sobra Pendente')
+              : (associatedVale ? 'Vale Emitido' : 'Falta Pendente'),
+            auditId: audit.id
+          });
         });
       }
+    });
+
+    // Always sort from most recent at top to oldest at bottom
+    records.sort((a, b) => {
+      const dateA = a.arrivalDate || '';
+      const dateB = b.arrivalDate || '';
+      if (dateA !== dateB) {
+        return dateB.localeCompare(dateA);
+      }
+      return (b.map || '').localeCompare(a.map || '', undefined, { numeric: true });
     });
 
     return records;
@@ -4877,7 +5519,7 @@ export default function FiscalView({
           return { ...asset, fiscalQty: fiscal, comodatoQty: comodato, recolhaQty: recolha }; // Ensure properties are preserved
         });
 
-        const finalStatus = hasDiscrepancy ? 'finalizado_divergente' : 'finalizado_ok';
+        const finalStatus: 'finalizado_ok' | 'finalizado_divergente' = hasDiscrepancy ? 'finalizado_divergente' : 'finalizado_ok';
         const now = new Date().toISOString();
 
         const updatedSession: AuditSession = {
@@ -4913,16 +5555,35 @@ export default function FiscalView({
         const { base64, filename, doc } = pdfRes;
 
         // Prepare payload data
-        const updatedAudits = audits.map(a => a.id === activeSession.id ? updatedSession : a);
+        const activeDate = activeSession.arrivalDate || activeSession.routeDate || activeSession.endTime?.split('T')[0] || activeSession.startTime?.split('T')[0];
+        const normActive = normalizeMapCode(activeSession.routeMap).toUpperCase();
+
+        const updatedAudits = audits.map(a => {
+          if (a.id === activeSession.id) return updatedSession;
+          const normA = normalizeMapCode(a.routeMap).toUpperCase();
+          const sameMap = normA === normActive || a.routeMap.trim().toUpperCase() === activeSession.routeMap.trim().toUpperCase() ||
+            (activeSession.unifiedMaps && activeSession.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normA));
+          const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+          const sameDate = !activeDate || !aDate || activeDate === aDate;
+
+          if (sameMap && sameDate && (a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada' || a.status === 'em_aberto' || a.status === 'reconferencia')) {
+            return {
+              ...a,
+              status: finalStatus,
+              pdfDownloaded: true
+            };
+          }
+          return a;
+        });
         
         let updatedRoutes = importedRoutes;
         if (onSaveImportedRoutes && importedRoutes) {
           updatedRoutes = importedRoutes.map(r => {
             const normR = normalizeMapCode(r.routeMap).toUpperCase();
-            const normActive = normalizeMapCode(activeSession.routeMap).toUpperCase();
-            const isMatched = normR === normActive || r.routeMap.trim().toUpperCase() === activeSession.routeMap.trim().toUpperCase() ||
+            const sameMap = normR === normActive || r.routeMap.trim().toUpperCase() === activeSession.routeMap.trim().toUpperCase() ||
               (activeSession.unifiedMaps && activeSession.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normR || m.trim().toUpperCase() === r.routeMap.trim().toUpperCase()));
-            if (isMatched) {
+            const sameDate = !r.routeDate || !activeDate || r.routeDate === activeDate;
+            if (sameMap && sameDate) {
               return { ...r, status: 'fechado' as const };
             }
             return r;
@@ -6511,11 +7172,11 @@ export default function FiscalView({
             {(() => {
               const selectedRoutes = importedRoutes.filter(r => {
                 const isToday = r.routeDate === routeImportDate;
-                const isOpen = r.status !== 'fechado' && !isRouteClosed(r.routeMap);
+                const isOpen = r.status !== 'fechado' && !isRouteClosed(r.routeMap, r.routeDate);
                 return isToday || isOpen;
               });
               const total = selectedRoutes.length;
-              const closed = selectedRoutes.filter(r => r.status === 'fechado' || isRouteClosed(r.routeMap)).length;
+              const closed = selectedRoutes.filter(r => r.status === 'fechado' || isRouteClosed(r.routeMap, r.routeDate)).length;
               const open = total - closed;
               const pct = total > 0 ? (closed / total) * 100 : 0;
 
@@ -7112,10 +7773,14 @@ export default function FiscalView({
               
               {/* Column 1: Sendo Trabalhados / Em Aberto */}
               {(() => {
-                const isAwaitingConciliation = (mapCode: string) => {
+                const isAwaitingConciliation = (mapCode: string, routeDate?: string) => {
                   const normR = normalizeMapCode(mapCode).toUpperCase();
                   const upperR = mapCode.trim().toUpperCase();
                   return pendingAudits.some(a => {
+                    if (routeDate) {
+                      const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+                      if (aDate && aDate !== routeDate) return false;
+                    }
                     const normA = normalizeMapCode(a.routeMap).toUpperCase();
                     const upperA = a.routeMap.trim().toUpperCase();
                     return normA === normR || upperA === upperR || (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normR || m.trim().toUpperCase() === upperR));
@@ -7126,7 +7791,7 @@ export default function FiscalView({
                   r.status !== 'fechado' && 
                   r.status !== 'em_analise' && 
                   !isRouteClosed(r.routeMap, r.routeDate) &&
-                  !isAwaitingConciliation(r.routeMap)
+                  !isAwaitingConciliation(r.routeMap, r.routeDate)
                 );
 
                 const standaloneActiveAudits = audits.filter(a => {
@@ -7966,76 +8631,437 @@ export default function FiscalView({
           {/* Section: Sobras & Faltas PA/AG (Divergências) */}
           {activeTab === 'divergencias' && (
             <div className="space-y-6 animate-fade-in" id="tab_divergencias">
+              {/* Header & Main Controls */}
               <div className="bg-white p-6 rounded-xl border border-slate-200 space-y-4">
                 <div className="flex flex-col lg:flex-row justify-between lg:items-center gap-4">
                   <div className="space-y-1">
                     <div className="flex items-center space-x-2 text-slate-900">
                       <Shield className="h-6 w-6 text-amber-500 animate-pulse" />
-                      <h2 className="font-sans font-bold text-lg uppercase">Controle de Sobras & Faltas</h2>
+                      <h2 className="font-sans font-bold text-lg uppercase">Controle de Sobras & Faltas (P.A. e A.G.)</h2>
                     </div>
                     <p className="text-xs text-slate-500">
-                      Gerenciamento e acompanhamento de divergências de produtos acabados (PA) e ativos de giro (AG). Sobras requerem dados de cliente (NB) e alinhamento de data de entrega.
+                      Gestão completa, conciliação e auditoria financeira de divergências físicas de Produtos Acabados (PA) e Ativos de Giro (AG).
                     </p>
                   </div>
 
-                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0 self-start lg:self-auto w-full lg:w-auto">
-                    {/* Gestão Separada de PA e AG */}
-                    <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 grow sm:grow-0">
-                      <button
-                        type="button"
-                        onClick={() => setSubTabDivergencias('all')}
-                        className={`px-3 py-1.5 text-xxs font-black uppercase rounded-lg transition-all cursor-pointer ${
-                          subTabDivergencias === 'all'
-                            ? 'bg-amber-500 text-slate-950 shadow-xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        Ver Tudo
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSubTabDivergencias('pa')}
-                        className={`px-3 py-1.5 text-xxs font-black uppercase rounded-lg transition-all cursor-pointer ${
-                          subTabDivergencias === 'pa'
-                            ? 'bg-amber-500 text-slate-950 shadow-xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        Gestão P.A. (Produtos)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSubTabDivergencias('ag')}
-                        className={`px-3 py-1.5 text-xxs font-black uppercase rounded-lg transition-all cursor-pointer ${
-                          subTabDivergencias === 'ag'
-                            ? 'bg-amber-500 text-slate-950 shadow-xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        Gestão A.G. (Ativos)
-                      </button>
+                  {/* Export Options */}
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={exportToExcel}
+                      className="flex items-center justify-center space-x-1.5 px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold text-xs uppercase rounded-xl border border-emerald-200 transition-all shadow-xs cursor-pointer"
+                      title="Exportar Visão Resumida Editável em Excel"
+                    >
+                      <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+                      <span>Exportar Excel</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={exportToPDF}
+                      className="flex items-center justify-center space-x-1.5 px-3.5 py-2 bg-red-50 hover:bg-red-100 text-red-700 font-bold text-xs uppercase rounded-xl border border-red-200 transition-all shadow-xs cursor-pointer"
+                      title="Exportar Relatório PDF"
+                    >
+                      <FileText className="h-4 w-4 text-red-600" />
+                      <span>Exportar PDF</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Executive Summary KPI Scorecards */}
+                {(() => {
+                  const records = getUnresolvedDiscrepancyRecords();
+                  const totalCount = records.length;
+                  const sobrasRecords = records.filter(r => r.deviationType === 'SOBRA');
+                  const faltasRecords = records.filter(r => r.deviationType === 'FALTA');
+                  
+                  const totalSobrasQtd = sobrasRecords.reduce((s, r) => s + r.divergence, 0);
+                  const totalSobrasVal = sobrasRecords.reduce((s, r) => s + (r.totalValue || 0), 0);
+                  
+                  const totalFaltasQtd = faltasRecords.reduce((s, r) => s + Math.abs(r.divergence), 0);
+                  const totalFaltasVal = faltasRecords.reduce((s, r) => s + (r.totalValue || 0), 0);
+
+                  const saldoLiquidoVal = totalSobrasVal - totalFaltasVal;
+
+                  return (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2">
+                      <div className="bg-slate-50 border border-slate-200 p-3.5 rounded-xl flex items-center justify-between">
+                        <div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">Total Ocorrências</span>
+                          <span className="text-xl font-black text-slate-900 font-mono">{totalCount}</span>
+                          <span className="text-[10px] text-slate-400 block">itens divergentes na seleção</span>
+                        </div>
+                        <div className="p-2.5 bg-slate-200/60 rounded-lg text-slate-700">
+                          <Layers className="h-5 w-5" />
+                        </div>
+                      </div>
+
+                      <div className="bg-emerald-50/60 border border-emerald-200 p-3.5 rounded-xl flex items-center justify-between">
+                        <div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 block">Sobras Identificadas (+)</span>
+                          <div className="flex items-baseline space-x-1.5">
+                            <span className="text-xl font-black text-emerald-700 font-mono">+{totalSobrasQtd}</span>
+                            <span className="text-xs font-bold text-emerald-800 font-mono">R$ {totalSobrasVal.toFixed(2)}</span>
+                          </div>
+                          <span className="text-[10px] text-emerald-600 block">{sobrasRecords.length} registros de sobras</span>
+                        </div>
+                        <div className="p-2.5 bg-emerald-100 rounded-lg text-emerald-700">
+                          <ArrowUpCircle className="h-5 w-5" />
+                        </div>
+                      </div>
+
+                      <div className="bg-red-50/60 border border-red-200 p-3.5 rounded-xl flex items-center justify-between">
+                        <div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-red-800 block">Faltas Identificadas (-)</span>
+                          <div className="flex items-baseline space-x-1.5">
+                            <span className="text-xl font-black text-red-700 font-mono">-{totalFaltasQtd}</span>
+                            <span className="text-xs font-bold text-red-800 font-mono">R$ {totalFaltasVal.toFixed(2)}</span>
+                          </div>
+                          <span className="text-[10px] text-red-600 block">{faltasRecords.length} registros de faltas</span>
+                        </div>
+                        <div className="p-2.5 bg-red-100 rounded-lg text-red-700">
+                          <ArrowDownCircle className="h-5 w-5" />
+                        </div>
+                      </div>
+
+                      <div className={`p-3.5 rounded-xl border flex items-center justify-between ${
+                        saldoLiquidoVal >= 0 ? 'bg-amber-50/60 border-amber-200' : 'bg-rose-50/60 border-rose-200'
+                      }`}>
+                        <div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600 block">Saldo Líquido Operacional</span>
+                          <span className={`text-xl font-black font-mono ${saldoLiquidoVal >= 0 ? 'text-amber-900' : 'text-rose-700'}`}>
+                            R$ {saldoLiquidoVal.toFixed(2)}
+                          </span>
+                          <span className="text-[10px] text-slate-500 block">Diferença Sobras vs Faltas</span>
+                        </div>
+                        <div className={`p-2.5 rounded-lg ${saldoLiquidoVal >= 0 ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'}`}>
+                          <Sparkles className="h-5 w-5" />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Interactive Filter Control Toolbar */}
+                <div className="space-y-3 pt-2">
+                  {/* Top Bar: Dimension Filters (Desvio, Categoria, Formato) */}
+                  <div className="bg-slate-100 p-3 rounded-2xl border border-slate-200/90 shadow-2xs space-y-3">
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-2.5 items-center">
+                      
+                      {/* 1. Deviation Filter (Desvio: Sobras vs Faltas) */}
+                      <div className="lg:col-span-5 flex items-center space-x-1.5 bg-white p-1 rounded-xl border border-slate-200 shadow-2xs">
+                        <span className="text-[10px] font-black uppercase text-slate-500 pl-2 pr-1 font-sans tracking-wide">
+                          Desvio:
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setFilterType('all')}
+                          className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-black uppercase transition cursor-pointer text-center ${
+                            filterType === 'all'
+                              ? 'bg-slate-900 text-white shadow-xs'
+                              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                          }`}
+                        >
+                          Todos
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setFilterType('falta')}
+                          className={`flex-1 flex items-center justify-center space-x-1 py-1.5 px-2.5 rounded-lg text-xs font-black uppercase transition cursor-pointer ${
+                            filterType === 'falta'
+                              ? 'bg-red-600 text-white shadow-sm ring-2 ring-red-300'
+                              : 'text-red-700 bg-red-50 hover:bg-red-100 hover:text-red-900 border border-red-200'
+                          }`}
+                        >
+                          <ArrowDownCircle className="h-4 w-4 shrink-0" />
+                          <span>Só Faltas (-)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setFilterType('sobra')}
+                          className={`flex-1 flex items-center justify-center space-x-1 py-1.5 px-2.5 rounded-lg text-xs font-black uppercase transition cursor-pointer ${
+                            filterType === 'sobra'
+                              ? 'bg-emerald-600 text-white shadow-sm ring-2 ring-emerald-300'
+                              : 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100 hover:text-emerald-900 border border-emerald-200'
+                          }`}
+                        >
+                          <ArrowUpCircle className="h-4 w-4 shrink-0" />
+                          <span>Só Sobras (+)</span>
+                        </button>
+                      </div>
+
+                      {/* 2. Category Filter (Categoria: PA vs AG) */}
+                      <div className="lg:col-span-4 flex items-center space-x-1.5 bg-white p-1 rounded-xl border border-slate-200 shadow-2xs">
+                        <span className="text-[10px] font-black uppercase text-slate-500 pl-2 pr-1 font-sans tracking-wide">
+                          Categoria:
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setSubTabDivergencias('all')}
+                          className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-black uppercase transition cursor-pointer text-center ${
+                            subTabDivergencias === 'all'
+                              ? 'bg-slate-900 text-white shadow-xs'
+                              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                          }`}
+                        >
+                          Todos
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSubTabDivergencias('pa')}
+                          className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-black uppercase transition cursor-pointer text-center ${
+                            subTabDivergencias === 'pa'
+                              ? 'bg-amber-600 text-white shadow-sm ring-2 ring-amber-300'
+                              : 'text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200'
+                          }`}
+                        >
+                          📦 Só P.A.
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSubTabDivergencias('ag')}
+                          className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-black uppercase transition cursor-pointer text-center ${
+                            subTabDivergencias === 'ag'
+                              ? 'bg-blue-600 text-white shadow-sm ring-2 ring-blue-300'
+                              : 'text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200'
+                          }`}
+                        >
+                          🔄 Só A.G.
+                        </button>
+                      </div>
+
+                      {/* 3. View Format Switcher (Formato) */}
+                      <div className="lg:col-span-3 flex items-center space-x-1.5 bg-white p-1 rounded-xl border border-slate-200 shadow-2xs">
+                        <span className="text-[10px] font-black uppercase text-slate-500 pl-2 pr-1 font-sans tracking-wide">
+                          Formato:
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setDivergenciasDisplayFormat('tabela')}
+                          className={`flex-1 flex items-center justify-center space-x-1 py-1.5 px-2 rounded-lg text-xs font-black uppercase transition cursor-pointer ${
+                            divergenciasDisplayFormat === 'tabela'
+                              ? 'bg-amber-500 text-slate-950 shadow-xs font-black'
+                              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                          }`}
+                        >
+                          <Table className="h-3.5 w-3.5" />
+                          <span>Tabela</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDivergenciasDisplayFormat('cartoes')}
+                          className={`flex-1 flex items-center justify-center space-x-1 py-1.5 px-2 rounded-lg text-xs font-black uppercase transition cursor-pointer ${
+                            divergenciasDisplayFormat === 'cartoes'
+                              ? 'bg-amber-500 text-slate-950 shadow-xs font-black'
+                              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                          }`}
+                        >
+                          <LayoutGrid className="h-3.5 w-3.5" />
+                          <span>Cartões</span>
+                        </button>
+                      </div>
+
                     </div>
 
-                    {/* Botões de Exportação */}
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={exportToExcel}
-                        className="flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold text-xxs uppercase rounded-xl border border-emerald-200 transition-all shadow-xs cursor-pointer grow sm:grow-0"
-                        title="Exportar Visão Resumida Editável em Excel"
-                      >
-                        <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
-                        <span>Exportar Excel</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={exportToPDF}
-                        className="flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 font-bold text-xxs uppercase rounded-xl border border-red-200 transition-all shadow-xs cursor-pointer grow sm:grow-0"
-                        title="Exportar Relatório PDF"
-                      >
-                        <FileText className="h-4 w-4 text-red-600" />
-                        <span>Exportar PDF</span>
-                      </button>
+                    {/* Search & Dates Row */}
+                    <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-end pt-1 border-t border-slate-200/60">
+                      {/* Search */}
+                      <div className="md:col-span-4 space-y-1">
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">
+                          Buscar Mapa, Placa, Item, NB ou Colaborador
+                        </label>
+                        <div className="relative">
+                          <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
+                          <input
+                            type="text"
+                            placeholder="Digite código, mapa, motorista..."
+                            value={filterNB}
+                            onChange={(e) => setFilterNB(e.target.value)}
+                            className="w-full text-xs pl-8 pr-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500 transition font-mono"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Date Range: De */}
+                      <div className="md:col-span-2 space-y-1">
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">
+                          Data De
+                        </label>
+                        <input
+                          type="date"
+                          value={filterStartDate}
+                          onChange={(e) => {
+                            setFilterStartDate(e.target.value);
+                            if (e.target.value) setFilterDate('');
+                          }}
+                          className="w-full text-xs px-2.5 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500 transition font-mono text-[11px]"
+                        />
+                      </div>
+
+                      {/* Date Range: Até */}
+                      <div className="md:col-span-2 space-y-1">
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">
+                          Data Até
+                        </label>
+                        <input
+                          type="date"
+                          value={filterEndDate}
+                          onChange={(e) => {
+                            setFilterEndDate(e.target.value);
+                            if (e.target.value) setFilterDate('');
+                          }}
+                          className="w-full text-xs px-2.5 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500 transition font-mono text-[11px]"
+                        />
+                      </div>
+
+                      {/* Specific Date */}
+                      <div className="md:col-span-2 space-y-1">
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">
+                          Data Única
+                        </label>
+                        <input
+                          type="date"
+                          value={filterDate}
+                          onChange={(e) => {
+                            setFilterDate(e.target.value);
+                            if (e.target.value) {
+                              setFilterStartDate('');
+                              setFilterEndDate('');
+                            }
+                          }}
+                          className="w-full text-xs px-2.5 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500 transition font-mono text-[11px]"
+                        />
+                      </div>
+
+                      {/* Clear Button */}
+                      <div className="md:col-span-2 flex flex-col justify-end">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFilterNB('');
+                            setFilterDate('');
+                            setFilterStartDate('');
+                            setFilterEndDate('');
+                            setFilterType('all');
+                            setSubTabDivergencias('all');
+                          }}
+                          disabled={!filterNB && !filterDate && !filterStartDate && !filterEndDate && filterType === 'all' && subTabDivergencias === 'all'}
+                          className="w-full py-2 bg-slate-200 hover:bg-slate-300 disabled:opacity-40 text-slate-800 text-[10px] font-black uppercase rounded-lg transition cursor-pointer text-center"
+                          title="Limpar todos os filtros aplicados"
+                        >
+                          Limpar Filtros
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Quick Calendar Presets Bar */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/50 text-xs">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[10px] font-extrabold text-slate-500 uppercase font-sans flex items-center space-x-1 mr-1">
+                          <Calendar className="h-3.5 w-3.5 text-amber-500" />
+                          <span>Atalhos Rápidos:</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const today = getTodayYYYYMMDD();
+                            setFilterDate(today);
+                            setFilterStartDate('');
+                            setFilterEndDate('');
+                          }}
+                          className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold transition cursor-pointer border ${
+                            filterDate === getTodayYYYYMMDD()
+                              ? 'bg-amber-500 text-slate-950 border-amber-600 shadow-2xs'
+                              : 'bg-white hover:bg-amber-50 text-slate-700 border-slate-200'
+                          }`}
+                        >
+                          📅 Hoje
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFilterStartDate(getLastNDaysYYYYMMDD(7));
+                            setFilterEndDate(getTodayYYYYMMDD());
+                            setFilterDate('');
+                          }}
+                          className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold transition cursor-pointer border ${
+                            filterStartDate === getLastNDaysYYYYMMDD(7) && filterEndDate === getTodayYYYYMMDD()
+                              ? 'bg-amber-500 text-slate-950 border-amber-600 shadow-2xs'
+                              : 'bg-white hover:bg-amber-50 text-slate-700 border-slate-200'
+                          }`}
+                        >
+                          🗓️ Últimos 7 Dias
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFilterStartDate(getMonthStartYYYYMMDD());
+                            setFilterEndDate(getTodayYYYYMMDD());
+                            setFilterDate('');
+                          }}
+                          className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold transition cursor-pointer border ${
+                            filterStartDate === getMonthStartYYYYMMDD() && filterEndDate === getTodayYYYYMMDD()
+                              ? 'bg-amber-500 text-slate-950 border-amber-600 shadow-2xs'
+                              : 'bg-white hover:bg-amber-50 text-slate-700 border-slate-200'
+                          }`}
+                        >
+                          📊 Este Mês
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFilterDate('');
+                            setFilterStartDate('');
+                            setFilterEndDate('');
+                          }}
+                          className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold transition cursor-pointer border ${
+                            !filterDate && !filterStartDate && !filterEndDate
+                              ? 'bg-slate-800 text-white border-slate-900 shadow-2xs'
+                              : 'bg-white hover:bg-slate-50 text-slate-600 border-slate-200'
+                          }`}
+                        >
+                          🌐 Todas as Datas
+                        </button>
+                      </div>
+
+                      {/* Active Filter Badges Notification */}
+                      {(filterType !== 'all' || subTabDivergencias !== 'all' || filterDate || filterStartDate || filterEndDate || filterNB) && (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {filterType === 'falta' && (
+                            <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-200 flex items-center space-x-1">
+                              <span>🔴 Só Faltas (-)</span>
+                              <button type="button" onClick={() => setFilterType('all')} className="ml-1 text-red-600 hover:text-red-950 font-bold">×</button>
+                            </span>
+                          )}
+                          {filterType === 'sobra' && (
+                            <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center space-x-1">
+                              <span>🟢 Só Sobras (+)</span>
+                              <button type="button" onClick={() => setFilterType('all')} className="ml-1 text-emerald-600 hover:text-emerald-950 font-bold">×</button>
+                            </span>
+                          )}
+                          {subTabDivergencias === 'pa' && (
+                            <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-200 flex items-center space-x-1">
+                              <span>📦 Só P.A.</span>
+                              <button type="button" onClick={() => setSubTabDivergencias('all')} className="ml-1 text-amber-700 hover:text-amber-950 font-bold">×</button>
+                            </span>
+                          )}
+                          {subTabDivergencias === 'ag' && (
+                            <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-blue-100 text-blue-900 border border-blue-200 flex items-center space-x-1">
+                              <span>🔄 Só A.G.</span>
+                              <button type="button" onClick={() => setSubTabDivergencias('all')} className="ml-1 text-blue-700 hover:text-blue-950 font-bold">×</button>
+                            </span>
+                          )}
+                          {(filterDate || filterStartDate || filterEndDate) && (
+                            <span className="text-[10px] font-mono text-slate-800 bg-slate-200 px-2 py-0.5 rounded-full font-bold border border-slate-300 flex items-center space-x-1">
+                              <span>
+                                {filterDate 
+                                  ? `Data: ${formatDateBR(filterDate)}` 
+                                  : `Período: ${filterStartDate ? formatDateBR(filterStartDate) : 'Início'} a ${filterEndDate ? formatDateBR(filterEndDate) : 'Hoje'}`}
+                              </span>
+                              <button type="button" onClick={() => { setFilterDate(''); setFilterStartDate(''); setFilterEndDate(''); }} className="ml-1 text-slate-700 hover:text-slate-950 font-bold">×</button>
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -8046,20 +9072,20 @@ export default function FiscalView({
                 <button
                   type="button"
                   onClick={() => setSobrasViewMode('operacional')}
-                  className={`flex-1 py-3 px-4 font-sans font-extrabold text-xs tracking-tight rounded-xl transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+                  className={`flex-1 py-2.5 px-4 font-sans font-extrabold text-xs tracking-tight rounded-xl transition-all flex items-center justify-center space-x-2 cursor-pointer ${
                     sobrasViewMode === 'operacional'
                       ? 'bg-amber-500 text-slate-950 shadow-sm'
                       : 'bg-slate-50 text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                   }`}
                 >
                   <Shield className="h-4 w-4" />
-                  <span>Painel Operacional (Sobras e Faltas)</span>
+                  <span>Painel Operacional (Sobras e Faltas Pendentes)</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => setSobrasViewMode('master')}
-                  className={`flex-1 py-3 px-4 font-sans font-extrabold text-xs tracking-tight rounded-xl transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+                  className={`flex-1 py-2.5 px-4 font-sans font-extrabold text-xs tracking-tight rounded-xl transition-all flex items-center justify-center space-x-2 cursor-pointer ${
                     sobrasViewMode === 'master'
                       ? 'bg-amber-500 text-slate-950 shadow-sm'
                       : 'bg-slate-50 text-slate-600 hover:bg-slate-100 hover:text-slate-900'
@@ -8067,7 +9093,7 @@ export default function FiscalView({
                 >
                   <FileCheck className="h-4 w-4 text-slate-950" />
                   <span className="flex items-center space-x-2">
-                    <span>Sobras & Faltas (Visão Master)</span>
+                    <span>Sobras & Faltas (Visão Master Histórica)</span>
                     <span className="text-[10px] bg-red-100 text-red-900 px-2 py-0.5 rounded-full font-sans font-extrabold border border-red-200">
                       Analista Master / Baixa Definitiva
                     </span>
@@ -8075,18 +9101,15 @@ export default function FiscalView({
                 </button>
               </div>
 
-              {/* DIRETÓRIO LOCAL DE ARQUIVAMENTO - EXIBIÇÃO EM CIMA DO FILTRO DE SOBRAS & FALTAS */}
-              <div className="bg-slate-50 rounded-xl border border-slate-200/80 p-5 space-y-3 shadow-sm">
+              {/* DIRETÓRIO LOCAL DE ARQUIVAMENTO */}
+              <div className="bg-slate-50 rounded-xl border border-slate-200/80 p-4 space-y-2 shadow-sm">
                 <div className="flex items-center space-x-2.5">
-                  <Folder className="h-5 w-5 text-amber-500 shrink-0" />
+                  <Folder className="h-4 w-4 text-amber-500 shrink-0" />
                   <div>
-                    <h4 className="font-sans font-bold text-sm text-slate-900 uppercase">Caminho da Rede para Salvar os PDFs de Conciliação</h4>
-                    <p className="text-[10px] text-slate-500 font-medium">
-                      Para fins de auditoria, conciliação definitiva, e manutenção do histórico físico de sobras/faltas, salve as vias impressas ou digitais dos relatórios no seguinte caminho de rede mapeado:
-                    </p>
+                    <h4 className="font-sans font-bold text-xs text-slate-900 uppercase">Caminho da Rede para Salvar os PDFs de Conciliação</h4>
                   </div>
                 </div>
-                <div className="bg-white border border-slate-200 rounded-lg p-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-inner">
+                <div className="bg-white border border-slate-200 rounded-lg p-2.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 shadow-inner">
                   <div className="font-mono text-xs text-slate-800 break-all select-all font-bold">
                     P:\Guarabira\2026\04.LOGISTICA\ARMAZÉM\3.0 ACURACIDADE\3.1 PACOTE PREJUIZO\FALTAS EM ROTA\RETORNO DE ROTA
                   </div>
@@ -8096,184 +9119,203 @@ export default function FiscalView({
                       navigator.clipboard.writeText("P:\\Guarabira\\2026\\04.LOGISTICA\\ARMAZÉM\\3.0 ACURACIDADE\\3.1 PACOTE PREJUIZO\\FALTAS EM ROTA\\RETORNO DE ROTA");
                       alert("Caminho copiado para a área de transferência!");
                     }}
-                    className="shrink-0 flex items-center space-x-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-150 text-slate-700 font-semibold text-[10px] rounded-md transition cursor-pointer border border-slate-200"
+                    className="shrink-0 flex items-center space-x-1.5 px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-[10px] rounded-md transition cursor-pointer border border-slate-200"
                   >
-                    <Copy className="h-3.5 w-3.5 text-slate-500" />
+                    <Copy className="h-3 w-3 text-slate-500" />
                     <span>Copiar Caminho</span>
                   </button>
                 </div>
               </div>
 
-              {/* Filter controls */}
-              <div className="bg-white p-4 rounded-xl border border-slate-200 grid grid-cols-1 md:grid-cols-4 gap-3">
-                <div className="space-y-1">
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">Buscar NB, Mapa ou Placa</label>
-                  <div className="relative">
-                    <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
-                    <input
-                      type="text"
-                      placeholder="Pesquisar..."
-                      value={filterNB}
-                      onChange={(e) => setFilterNB(e.target.value)}
-                      className="w-full text-xs pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-1 focus:ring-amber-500 transition font-mono"
-                    />
+              {/* VIEW RENDER: TABELA DETALHADA VS CARTÕES */}
+              {divergenciasDisplayFormat === 'tabela' ? (
+                /* HIGH-DENSITY TABULAR DATA GRID VIEW */
+                <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden animate-fade-in">
+                  <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center space-x-2">
+                        <Table className="h-4 w-4 text-amber-600" />
+                        <h3 className="font-sans font-black text-xs text-slate-900 uppercase tracking-wider">
+                          Visão em Tabela de Sobras e Faltas (Item por Item)
+                        </h3>
+                      </div>
+                      <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-1.5 font-medium">
+                        <span>Filtro Ativo:</span>
+                        <span className={`px-2 py-0.5 rounded font-black text-[10px] uppercase ${
+                          filterType === 'falta' ? 'bg-red-100 text-red-800 border border-red-300' :
+                          filterType === 'sobra' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' :
+                          'bg-slate-200 text-slate-800'
+                        }`}>
+                          {filterType === 'falta' ? '🔴 Só Faltas (-)' : filterType === 'sobra' ? '🟢 Só Sobras (+)' : 'Todos os Desvios'}
+                        </span>
+                        <span>•</span>
+                        <span className={`px-2 py-0.5 rounded font-black text-[10px] uppercase ${
+                          subTabDivergencias === 'pa' ? 'bg-amber-100 text-amber-900 border border-amber-300' :
+                          subTabDivergencias === 'ag' ? 'bg-blue-100 text-blue-900 border border-blue-300' :
+                          'bg-slate-200 text-slate-800'
+                        }`}>
+                          {subTabDivergencias === 'pa' ? '📦 Produtos Acabados (P.A.)' : subTabDivergencias === 'ag' ? '🔄 Ativos de Giro (A.G.)' : 'Todos (PA + AG)'}
+                        </span>
+                        {(filterDate || filterStartDate || filterEndDate) && (
+                          <>
+                            <span>•</span>
+                            <span className="bg-slate-200 text-slate-800 border border-slate-300 px-2 py-0.5 rounded font-mono font-bold text-[10px]">
+                              {filterDate ? `Data: ${formatDateBR(filterDate)}` : `Período: ${filterStartDate ? formatDateBR(filterStartDate) : 'Início'} a ${filterEndDate ? formatDateBR(filterEndDate) : 'Hoje'}`}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center space-x-2 shrink-0">
+                      <span className="text-xs font-mono font-black text-slate-700 bg-white px-3 py-1.5 rounded-lg border border-slate-300 shadow-2xs">
+                        {getUnresolvedDiscrepancyRecords().length} registros encontrados
+                      </span>
+                    </div>
                   </div>
+
+                  {getUnresolvedDiscrepancyRecords().length === 0 ? (
+                    <div className="p-12 text-center text-slate-400 text-xs space-y-2">
+                      <p className="font-semibold text-slate-500">Nenhum registro de divergência encontrado com os filtros selecionados.</p>
+                      <p className="text-[11px] text-slate-400">
+                        {filterType === 'falta' && 'Não foram identificadas faltas pendentes para o período e categoria selecionados.'}
+                        {filterType === 'sobra' && 'Não foram identificadas sobras pendentes para o período e categoria selecionados.'}
+                        {filterType === 'all' && 'Nenhum item pendente com os parâmetros informados.'}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="bg-slate-100/80 border-b border-slate-200 text-[10px] font-extrabold uppercase text-slate-600 font-sans tracking-wider">
+                            <th className="p-3">Data</th>
+                            <th className="p-3">Colaborador / Motorista</th>
+                            <th className="p-3">Mapa / Placa</th>
+                            <th className="p-3 text-center">Tipo</th>
+                            <th className="p-3">Código Item</th>
+                            <th className="p-3">Descrição do Item</th>
+                            <th className="p-3 text-center">Unid.</th>
+                            <th className="p-3 text-center">Fiscal / Físico</th>
+                            <th className="p-3 text-right">Desvio (Qtd)</th>
+                            <th className="p-3 text-right">Valor Total (R$)</th>
+                            <th className="p-3 text-center">Status</th>
+                            <th className="p-3 text-center">Ações</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 font-sans">
+                          {getUnresolvedDiscrepancyRecords().map((rec, index) => {
+                            const isSobra = rec.deviationType === 'SOBRA';
+                            const matchingAudit = audits.find(a => normalizeMapCode(a.routeMap).toUpperCase() === normalizeMapCode(rec.map).toUpperCase());
+                            
+                            return (
+                              <tr key={`${rec.map}_${rec.itemCode}_${index}`} className="hover:bg-amber-50/40 transition">
+                                <td className="p-3 font-mono text-[11px] text-slate-600 whitespace-nowrap">
+                                  {rec.arrivalDate ? new Date(rec.arrivalDate + 'T00:00:00').toLocaleDateString('pt-BR') : '---'}
+                                </td>
+                                <td className="p-3 font-medium text-slate-900 max-w-[160px] truncate" title={rec.driverName}>
+                                  {rec.driverName}
+                                </td>
+                                <td className="p-3 whitespace-nowrap">
+                                  <div className="font-mono font-bold text-slate-900">Mapa {rec.map}</div>
+                                  <div className="font-mono text-[10px] text-slate-400">{rec.plate}</div>
+                                </td>
+                                <td className="p-3 text-center whitespace-nowrap">
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-black font-mono ${
+                                    rec.type === 'PA' 
+                                      ? 'bg-amber-100 text-amber-900 border border-amber-300' 
+                                      : 'bg-blue-100 text-blue-900 border border-blue-300'
+                                  }`}>
+                                    {rec.type}
+                                  </span>
+                                </td>
+                                <td className="p-3 font-mono font-bold text-slate-700 whitespace-nowrap">
+                                  {rec.itemCode}
+                                </td>
+                                <td className="p-3 font-medium text-slate-800 max-w-[220px] truncate" title={rec.itemDescription}>
+                                  {rec.itemDescription}
+                                </td>
+                                <td className="p-3 text-center font-mono text-slate-500 font-bold uppercase">
+                                  {rec.unit || (rec.type === 'PA' ? 'CX' : 'UN')}
+                                </td>
+                                <td className="p-3 text-center font-mono text-slate-600 whitespace-nowrap">
+                                  {rec.fiscalQty} / <strong className="text-slate-900">{rec.physicalQty}</strong>
+                                </td>
+                                <td className="p-3 text-right font-mono whitespace-nowrap">
+                                  <span className={`inline-block px-2 py-0.5 rounded font-black text-xs ${
+                                    isSobra 
+                                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' 
+                                      : 'bg-red-100 text-red-800 border border-red-300'
+                                  }`}>
+                                    {isSobra ? `+${rec.divergence}` : rec.divergence}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-right font-mono font-bold text-slate-900 whitespace-nowrap">
+                                  R$ {(rec.totalValue || 0).toFixed(2)}
+                                </td>
+                                <td className="p-3 text-center whitespace-nowrap">
+                                  <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${
+                                    rec.status.includes('Concluído') || rec.status.includes('Enviado') || rec.status.includes('Baixado')
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : rec.status.includes('Vale')
+                                        ? 'bg-purple-100 text-purple-800'
+                                        : 'bg-amber-100 text-amber-900'
+                                  }`}>
+                                    {rec.status}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-center whitespace-nowrap">
+                                  {matchingAudit ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setActiveSession(matchingAudit);
+                                      }}
+                                      className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-white font-bold text-[10px] rounded-lg transition shadow-xs cursor-pointer"
+                                    >
+                                      Abrir Mapa
+                                    </button>
+                                  ) : (
+                                    <span className="text-[10px] text-slate-400 italic">Histórico</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
+              ) : (
+                /* CARDS BY MAP VIEW */
+                <div className="grid grid-cols-1 gap-6">
+                  {(() => {
+                    const discrepantAudits = (audits || []).filter(audit => {
+                      if (!audit) return false;
+                      const hasProductDiff = (audit.items || []).some(item => {
+                        const phys = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
+                        const fisc = item.fiscalQty ?? 0;
+                        const comodato = item.comodatoQty ?? 0;
+                        const recolha = item.recolhaQty ?? 0;
+                        return (phys + comodato - recolha) !== fisc;
+                      });
+                      const hasAssetDiff = (audit.assets || []).some(asset => {
+                        if (isExemptAsset(asset.assetId, asset.assetName)) return false;
 
-                <div className="space-y-1">
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">Filtrar por Data</label>
-                  <input
-                    type="date"
-                    value={filterDate}
-                    onChange={(e) => setFilterDate(e.target.value)}
-                    className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-1 focus:ring-amber-500 transition font-semibold font-mono"
-                  />
-                </div>
+                        const phys = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
+                        const fisc = asset.fiscalQty ?? 0;
+                        const comodato = asset.comodatoQty ?? 0;
+                        const recolha = asset.recolhaQty ?? 0;
+                        return (phys + comodato - recolha) !== fisc;
+                      });
 
-                <div className="space-y-1">
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">Tipo de Desvio</label>
-                  <select
-                    value={filterType}
-                    onChange={(e) => setFilterType(e.target.value as any)}
-                    className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-1 focus:ring-amber-500 transition"
-                  >
-                    <option value="all">Mostrar Todos</option>
-                    <option value="sobra">Apenas Sobras (+)</option>
-                    <option value="falta">Apenas Faltas (-)</option>
-                  </select>
-                </div>
-
-                <div className="flex items-end">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFilterNB('');
-                      setFilterDate('');
-                      setFilterType('all');
-                    }}
-                    disabled={!filterNB && !filterDate && filterType === 'all'}
-                    className="w-full py-2 bg-slate-150 hover:bg-slate-200 disabled:opacity-50 text-slate-700 text-xs font-bold uppercase rounded-lg transition cursor-pointer"
-                  >
-                    Limpar Filtros
-                  </button>
-                </div>
-              </div>
-
-              {/* Grid of discrepant maps */}
-              <div className="grid grid-cols-1 gap-6">
-                {(() => {
-                  // Find all audits that have discrepancies
-                  const discrepantAudits = (audits || []).filter(audit => {
-                    if (!audit) return false;
-                    const hasProductDiff = (audit.items || []).some(item => {
-                      const phys = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
-                      const fisc = item.fiscalQty ?? 0;
-                      const comodato = item.comodatoQty ?? 0;
-                      const recolha = item.recolhaQty ?? 0;
-                      return (phys + comodato - recolha) !== fisc;
-                    });
-                    const hasAssetDiff = (audit.assets || []).some(asset => {
-                      if (isExemptAsset(asset.assetId, asset.assetName)) return false;
-
-                      const phys = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
-                      const fisc = asset.fiscalQty ?? 0;
-                      const comodato = asset.comodatoQty ?? 0;
-                      const recolha = asset.recolhaQty ?? 0;
-                      return (phys + comodato - recolha) !== fisc;
-                    });
-
-                    const hasProductSurplus = (audit.items || []).some(i => {
-                      const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-                      const fisc = i.fiscalQty ?? 0;
-                      const comodato = i.comodatoQty ?? 0;
-                      const recolha = i.recolhaQty ?? 0;
-                      return (phys + comodato - recolha) > fisc;
-                    });
-                    const hasAssetSurplus = (audit.assets || []).some(a => {
-                      if (isExemptAsset(a.assetId, a.assetName)) return false;
-
-                      const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-                      const fisc = a.fiscalQty ?? 0;
-                      const comodato = a.comodatoQty ?? 0;
-                      const recolha = a.recolhaQty ?? 0;
-                      return (phys - fisc + comodato - recolha) > 0;
-                    });
-                    const hasSurplus = hasProductSurplus || hasAssetSurplus;
-
-                    const hasProductDeficit = (audit.items || []).some(i => {
-                      const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-                      const fisc = i.fiscalQty ?? 0;
-                      const comodato = i.comodatoQty ?? 0;
-                      const recolha = i.recolhaQty ?? 0;
-                      return (phys + comodato - recolha) < fisc;
-                    });
-                    const hasAssetDeficit = (audit.assets || []).some(a => {
-                      if (isExemptAsset(a.assetId, a.assetName)) return false;
-
-                      const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-                      const fisc = a.fiscalQty ?? 0;
-                      const comodato = a.comodatoQty ?? 0;
-                      const recolha = a.recolhaQty ?? 0;
-                      return (phys - fisc + comodato - recolha) < 0;
-                    });
-                    const hasDeficit = hasProductDeficit || hasAssetDeficit;
-
-                    const unresolvedSurplus = hasSurplus && !(
-                      audit.surplusFlowStatus === 'ENVIADO' || 
-                      audit.surplusFlowStatus === 'BAIXADO' || 
-                      audit.surplusActionStatus === 'baixado_direto' ||
-                      audit.surplusActionStatus === 'enviado_cliente'
-                    );
-
-                    const unresolvedDeficit = hasDeficit && !(
-                      audit.deficitActionStatus === 'baixado_direto' ||
-                      (vales || []).some(v => v.auditId === audit.id)
-                    );
-
-                    // Filter based on selected view mode (operacional vs master)
-                    if (sobrasViewMode === 'operacional') {
-                      // If it has no unresolved surplus or deficit in operational mode, then it should disappear
-                      if (!unresolvedSurplus && !unresolvedDeficit) {
-                        return false;
-                      }
-                    } else {
-                      // In Visão Master mode, show all audits that have discrepancies (including launched surpluses and closed ones)
-                      if (!hasProductDiff && !hasAssetDiff) {
-                        return false;
-                      }
-                    }
-                    
-                    if (subTabDivergencias === 'pa') return hasProductDiff;
-                    if (subTabDivergencias === 'ag') return hasAssetDiff;
-                    return hasProductDiff || hasAssetDiff;
-                  });
-
-                  // Apply filter controls
-                  const filteredAudits = discrepantAudits.filter(audit => {
-                    // Filter by NB
-                    if (filterNB.trim()) {
-                      const nbQuery = filterNB.trim().toLowerCase();
-                      const hasMatchedNB = (audit.clientCodeNB || '').toLowerCase().includes(nbQuery) ||
-                        (audit.routeMap || '').toLowerCase().includes(nbQuery) ||
-                        (audit.plate || '').toLowerCase().includes(nbQuery);
-                      if (!hasMatchedNB) return false;
-                    }
-
-                    // Filter by Date
-                    if (filterDate) {
-                      const matchesDate = audit.arrivalDate === filterDate || audit.deliveryDate === filterDate;
-                      if (!matchesDate) return false;
-                    }
-
-                    // Filter by Type
-                    if (filterType !== 'all') {
-                      const hasSurplus = (audit.items || []).some(i => {
+                      const hasProductSurplus = (audit.items || []).some(i => {
                         const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
                         const fisc = i.fiscalQty ?? 0;
                         const comodato = i.comodatoQty ?? 0;
                         const recolha = i.recolhaQty ?? 0;
-                        return (phys - fisc + comodato - recolha) > 0;
-                      }) || (audit.assets || []).some(a => {
+                        return (phys + comodato - recolha) > fisc;
+                      });
+                      const hasAssetSurplus = (audit.assets || []).some(a => {
                         if (isExemptAsset(a.assetId, a.assetName)) return false;
 
                         const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
@@ -8282,14 +9324,16 @@ export default function FiscalView({
                         const recolha = a.recolhaQty ?? 0;
                         return (phys - fisc + comodato - recolha) > 0;
                       });
+                      const hasSurplus = hasProductSurplus || hasAssetSurplus;
 
-                      const hasDeficit = (audit.items || []).some(i => {
+                      const hasProductDeficit = (audit.items || []).some(i => {
                         const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
                         const fisc = i.fiscalQty ?? 0;
                         const comodato = i.comodatoQty ?? 0;
                         const recolha = i.recolhaQty ?? 0;
-                        return (phys - fisc + comodato - recolha) < 0;
-                      }) || (audit.assets || []).some(a => {
+                        return (phys + comodato - recolha) < fisc;
+                      });
+                      const hasAssetDeficit = (audit.assets || []).some(a => {
                         if (isExemptAsset(a.assetId, a.assetName)) return false;
 
                         const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
@@ -8298,741 +9342,776 @@ export default function FiscalView({
                         const recolha = a.recolhaQty ?? 0;
                         return (phys - fisc + comodato - recolha) < 0;
                       });
+                      const hasDeficit = hasProductDeficit || hasAssetDeficit;
 
-                      if (filterType === 'sobra' && !hasSurplus) return false;
-                      if (filterType === 'falta' && !hasDeficit) return false;
+                      const unresolvedSurplus = hasSurplus && !(
+                        audit.surplusFlowStatus === 'ENVIADO' || 
+                        audit.surplusFlowStatus === 'BAIXADO' || 
+                        audit.surplusActionStatus === 'baixado_direto' ||
+                        audit.surplusActionStatus === 'enviado_cliente'
+                      );
+
+                      const unresolvedDeficit = hasDeficit && !(
+                        audit.deficitActionStatus === 'baixado_direto' ||
+                        (vales || []).some(v => v.auditId === audit.id)
+                      );
+
+                      if (sobrasViewMode === 'operacional') {
+                        if (!unresolvedSurplus && !unresolvedDeficit) return false;
+                      } else {
+                        if (!hasProductDiff && !hasAssetDiff) return false;
+                      }
+                      
+                      if (subTabDivergencias === 'pa') return hasProductDiff;
+                      if (subTabDivergencias === 'ag') return hasAssetDiff;
+                      return hasProductDiff || hasAssetDiff;
+                    });
+
+                    // Apply filter controls
+                    const filteredAudits = discrepantAudits.filter(audit => {
+                      if (filterNB.trim()) {
+                        const nbQuery = filterNB.trim().toLowerCase();
+                        const driverName = getDriverName(audit.driverId).toLowerCase();
+                        const hasMatched = (audit.clientCodeNB || '').toLowerCase().includes(nbQuery) ||
+                          (audit.routeMap || '').toLowerCase().includes(nbQuery) ||
+                          (audit.plate || '').toLowerCase().includes(nbQuery) ||
+                          driverName.includes(nbQuery);
+                        if (!hasMatched) return false;
+                      }
+
+                      const rawAuditDate = audit.arrivalDate || audit.routeDate || (audit.startTime ? audit.startTime.split('T')[0] : '') || audit.deliveryDate;
+                      const normAuditDate = normalizeToYYYYMMDD(rawAuditDate);
+                      const normDeliveryDate = normalizeToYYYYMMDD(audit.deliveryDate);
+                      const normFilterDate = filterDate ? normalizeToYYYYMMDD(filterDate) : '';
+                      const normFilterStartDate = filterStartDate ? normalizeToYYYYMMDD(filterStartDate) : '';
+                      const normFilterEndDate = filterEndDate ? normalizeToYYYYMMDD(filterEndDate) : '';
+
+                      if (normFilterDate) {
+                        if (normAuditDate !== normFilterDate && normDeliveryDate !== normFilterDate) return false;
+                      }
+                      if (normFilterStartDate && (!normAuditDate || normAuditDate < normFilterStartDate)) return false;
+                      if (normFilterEndDate && (!normAuditDate || normAuditDate > normFilterEndDate)) return false;
+
+                      if (filterType !== 'all') {
+                        const checkItems = subTabDivergencias === 'pa' || subTabDivergencias === 'all';
+                        const checkAssets = subTabDivergencias === 'ag' || subTabDivergencias === 'all';
+
+                        const hasSurplus = (checkItems && (audit.items || []).some(i => {
+                          const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+                          const fisc = i.fiscalQty ?? 0;
+                          const comodato = i.comodatoQty ?? 0;
+                          const recolha = i.recolhaQty ?? 0;
+                          return (phys - fisc + comodato - recolha) > 0;
+                        })) || (checkAssets && (audit.assets || []).some(a => {
+                          if (isExemptAsset(a.assetId, a.assetName)) return false;
+                          const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
+                          const fisc = a.fiscalQty ?? 0;
+                          const comodato = a.comodatoQty ?? 0;
+                          const recolha = a.recolhaQty ?? 0;
+                          return (phys - fisc + comodato - recolha) > 0;
+                        }));
+
+                        const hasDeficit = (checkItems && (audit.items || []).some(i => {
+                          const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+                          const fisc = i.fiscalQty ?? 0;
+                          const comodato = i.comodatoQty ?? 0;
+                          const recolha = i.recolhaQty ?? 0;
+                          return (phys - fisc + comodato - recolha) < 0;
+                        })) || (checkAssets && (audit.assets || []).some(a => {
+                          if (isExemptAsset(a.assetId, a.assetName)) return false;
+                          const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
+                          const fisc = a.fiscalQty ?? 0;
+                          const comodato = a.comodatoQty ?? 0;
+                          const recolha = a.recolhaQty ?? 0;
+                          return (phys - fisc + comodato - recolha) < 0;
+                        }));
+
+                        if (filterType === 'sobra' && !hasSurplus) return false;
+                        if (filterType === 'falta' && !hasDeficit) return false;
+                      }
+
+                      return true;
+                    });
+
+                    if (filteredAudits.length === 0) {
+                      return (
+                        <div className="bg-white rounded-xl border border-slate-200 p-12 text-center text-slate-400 text-xs">
+                          {discrepantAudits.length === 0 
+                            ? "Nenhum mapa com sobras ou faltas registrado até o momento."
+                            : "Nenhum resultado corresponde aos filtros aplicados."}
+                        </div>
+                      );
                     }
 
-                    return true;
-                  });
-
-                  if (filteredAudits.length === 0) {
-                    return (
-                      <div className="bg-white rounded-xl border border-slate-200 p-12 text-center text-slate-400 text-xs">
-                        {discrepantAudits.length === 0 
-                          ? "Nenhum mapa com sobras ou faltas registrado até o momento."
-                          : "Nenhum resultado corresponde aos filtros aplicados."}
-                      </div>
-                    );
-                  }
-
-                  return filteredAudits.map(audit => {
-                    // Check the 30-day "ENVIO NO PRAZO" status
-                    const arrivalDateObj = new Date(audit.arrivalDate + 'T00:00:00');
-                    const daysElapsed = Math.floor((new Date().getTime() - arrivalDateObj.getTime()) / (1000 * 60 * 60 * 24));
-                    const isWithin30Days = daysElapsed <= 30;
-
-                    // Get list of surpluses
-                    const surpluses = [
-                      ...audit.items.filter(i => {
-                        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-                        const fisc = i.fiscalQty ?? 0;
-                        const comodato = i.comodatoQty ?? 0;
-                        const recolha = i.recolhaQty ?? 0;
-                        return (phys - fisc + comodato - recolha) > 0;
-                      }).map(i => {
-                        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-                        const fisc = i.fiscalQty ?? 0;
-                        const comodato = i.comodatoQty ?? 0;
-                        const recolha = i.recolhaQty ?? 0;
-                        return {
-                          code: i.productCode,
-                          description: i.productDescription,
-                          qty: phys - fisc + comodato - recolha,
-                          unit: 'cx',
-                          type: 'PA'
-                        };
-                      }),
-                      ...audit.assets.filter(a => {
-                        if (isExemptAsset(a.assetId, a.assetName)) return false;
-                        const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-                        const fisc = a.fiscalQty ?? 0;
-                        const comodato = a.comodatoQty ?? 0;
-                        const recolha = a.recolhaQty ?? 0;
-                        return (phys - fisc + comodato - recolha) > 0;
-                      }).map(a => {
-                        const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-                        const fisc = a.fiscalQty ?? 0;
-                        const comodato = a.comodatoQty ?? 0;
-                        const recolha = a.recolhaQty ?? 0;
-                        const code = getAssetCode(a.assetId, a.assetName);
-                        return {
-                          code,
-                          description: a.assetName || getAssetCanonicalName(code),
-                          qty: phys - fisc + comodato - recolha,
-                          unit: 'un',
-                          type: 'AG'
-                        };
-                      })
-                    ].filter(s => {
-                      if (subTabDivergencias === 'pa') return s.type === 'PA';
-                      if (subTabDivergencias === 'ag') return s.type === 'AG';
-                      return true;
+                    filteredAudits.sort((a, b) => {
+                      const dateA = a.arrivalDate || '';
+                      const dateB = b.arrivalDate || '';
+                      if (dateA !== dateB) return dateB.localeCompare(dateA);
+                      return (b.routeMap || '').localeCompare(a.routeMap || '', undefined, { numeric: true });
                     });
 
-                    // Get list of deficits
-                    const deficits = [
-                      ...audit.items.filter(i => {
-                        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-                        const fisc = i.fiscalQty ?? 0;
-                        const comodato = i.comodatoQty ?? 0;
-                        const recolha = i.recolhaQty ?? 0;
-                        return (phys - fisc + comodato - recolha) < 0;
-                      }).map(i => {
-                        const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-                        const fisc = i.fiscalQty ?? 0;
-                        const comodato = i.comodatoQty ?? 0;
-                        const recolha = i.recolhaQty ?? 0;
-                        return {
-                          code: i.productCode,
-                          description: i.productDescription,
-                          qty: Math.abs(phys - fisc + comodato - recolha),
-                          unit: 'cx',
-                          type: 'PA'
-                        };
-                      }),
-                      ...audit.assets.filter(a => {
-                        if (isExemptAsset(a.assetId, a.assetName)) return false;
-                        const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-                        const fisc = a.fiscalQty ?? 0;
-                        const comodato = a.comodatoQty ?? 0;
-                        const recolha = a.recolhaQty ?? 0;
-                        return (phys - fisc + comodato - recolha) < 0;
-                      }).map(a => {
-                        const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-                        const fisc = a.fiscalQty ?? 0;
-                        const comodato = a.comodatoQty ?? 0;
-                        const recolha = a.recolhaQty ?? 0;
-                        const code = getAssetCode(a.assetId, a.assetName);
-                        return {
-                          code,
-                          description: a.assetName || getAssetCanonicalName(code),
-                          qty: Math.abs(phys - fisc + comodato - recolha),
-                          unit: 'un',
-                          type: 'AG'
-                        };
-                      })
-                    ].filter(d => {
-                      if (subTabDivergencias === 'pa') return d.type === 'PA';
-                      if (subTabDivergencias === 'ag') return d.type === 'AG';
-                      return true;
-                    });
+                    return filteredAudits.map(audit => {
+                      const arrivalDateObj = new Date(audit.arrivalDate + 'T00:00:00');
+                      const daysElapsed = Math.floor((new Date().getTime() - arrivalDateObj.getTime()) / (1000 * 60 * 60 * 24));
+                      const isWithin30Days = daysElapsed <= 30;
 
-                    const currentObsType = cardObsTypes[audit.id] || (surpluses.length > 0 && deficits.length > 0 ? 'todos' : surpluses.length > 0 ? 'sobra' : deficits.length > 0 ? 'falta' : 'todos');
+                      const surpluses = [
+                        ...audit.items.filter(i => {
+                          const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+                          const fisc = i.fiscalQty ?? 0;
+                          const comodato = i.comodatoQty ?? 0;
+                          const recolha = i.recolhaQty ?? 0;
+                          return (phys - fisc + comodato - recolha) > 0;
+                        }).map(i => {
+                          const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+                          const fisc = i.fiscalQty ?? 0;
+                          const comodato = i.comodatoQty ?? 0;
+                          const recolha = i.recolhaQty ?? 0;
+                          return {
+                            code: i.productCode,
+                            description: i.productDescription,
+                            qty: phys - fisc + comodato - recolha,
+                            unit: 'cx',
+                            type: 'PA'
+                          };
+                        }),
+                        ...audit.assets.filter(a => {
+                          if (isExemptAsset(a.assetId, a.assetName)) return false;
+                          const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
+                          const fisc = a.fiscalQty ?? 0;
+                          const comodato = a.comodatoQty ?? 0;
+                          const recolha = a.recolhaQty ?? 0;
+                          return (phys - fisc + comodato - recolha) > 0;
+                        }).map(a => {
+                          const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
+                          const fisc = a.fiscalQty ?? 0;
+                          const comodato = a.comodatoQty ?? 0;
+                          const recolha = a.recolhaQty ?? 0;
+                          const code = getAssetCode(a.assetId, a.assetName);
+                          return {
+                            code,
+                            description: a.assetName || getAssetCanonicalName(code),
+                            qty: phys - fisc + comodato - recolha,
+                            unit: 'un',
+                            type: 'AG'
+                          };
+                        })
+                      ].filter(s => {
+                        if (filterType === 'falta') return false;
+                        if (subTabDivergencias === 'pa') return s.type === 'PA';
+                        if (subTabDivergencias === 'ag') return s.type === 'AG';
+                        return true;
+                      });
 
-                    return (
-                      <div key={audit.id} className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4 hover:border-slate-300 transition">
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
-                          <div>
-                            <div className="flex items-center space-x-2">
-                              <span className="font-sans font-black text-sm text-slate-900 bg-slate-100 px-2 py-0.5 rounded font-mono">Mapa {audit.routeMap}</span>
-                              <span className="font-mono text-xs text-slate-500">{audit.plate}</span>
-                              <span className="text-xxs text-slate-400 font-mono">Data: {new Date(audit.arrivalDate + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
-                            </div>
-                            <div className="text-xxs text-slate-400 mt-1">
-                              Motorista: <strong>{getDriverName(audit.driverId)}</strong>
-                            </div>
-                          </div>
+                      const deficits = [
+                        ...audit.items.filter(i => {
+                          const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+                          const fisc = i.fiscalQty ?? 0;
+                          const comodato = i.comodatoQty ?? 0;
+                          const recolha = i.recolhaQty ?? 0;
+                          return (phys - fisc + comodato - recolha) < 0;
+                        }).map(i => {
+                          const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+                          const fisc = i.fiscalQty ?? 0;
+                          const comodato = i.comodatoQty ?? 0;
+                          const recolha = i.recolhaQty ?? 0;
+                          return {
+                            code: i.productCode,
+                            description: i.productDescription,
+                            qty: Math.abs(phys - fisc + comodato - recolha),
+                            unit: 'cx',
+                            type: 'PA'
+                          };
+                        }),
+                        ...audit.assets.filter(a => {
+                          if (isExemptAsset(a.assetId, a.assetName)) return false;
+                          const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
+                          const fisc = a.fiscalQty ?? 0;
+                          const comodato = a.comodatoQty ?? 0;
+                          const recolha = a.recolhaQty ?? 0;
+                          return (phys - fisc + comodato - recolha) < 0;
+                        }).map(a => {
+                          const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
+                          const fisc = a.fiscalQty ?? 0;
+                          const comodato = a.comodatoQty ?? 0;
+                          const recolha = a.recolhaQty ?? 0;
+                          const code = getAssetCode(a.assetId, a.assetName);
+                          return {
+                            code,
+                            description: a.assetName || getAssetCanonicalName(code),
+                            qty: Math.abs(phys - fisc + comodato - recolha),
+                            unit: 'un',
+                            type: 'AG'
+                          };
+                        })
+                      ].filter(d => {
+                        if (filterType === 'sobra') return false;
+                        if (subTabDivergencias === 'pa') return d.type === 'PA';
+                        if (subTabDivergencias === 'ag') return d.type === 'AG';
+                        return true;
+                      });
 
-                          <div className="flex flex-wrap gap-1.5">
-                            {/* 30 Days Status Badge */}
-                            {audit.surplusFlowStatus === 'ENVIADO' ? (
-                              <span className="text-[10px] bg-emerald-600 text-white font-black px-2.5 py-0.5 rounded-full uppercase tracking-wider">
-                                ENVIADO
-                              </span>
-                            ) : isWithin30Days ? (
-                              <span className="text-[10px] bg-emerald-100 text-emerald-800 font-black px-2.5 py-0.5 rounded-full uppercase tracking-wider">
-                                ENVIO NO PRAZO
-                              </span>
-                            ) : (
-                              <span className="text-[10px] bg-red-100 text-red-800 font-black px-2.5 py-0.5 rounded-full uppercase tracking-wider">
-                                FORA DO PRAZO ({daysElapsed} dias)
-                              </span>
-                            )}
+                      if (surpluses.length === 0 && deficits.length === 0) return null;
 
-                            {audit.surplusFlowStatus === 'ENCAMINHADO' && !audit.gestorAlignedDeliveryDate && (
-                              <span className="text-[10px] bg-amber-100 text-amber-900 font-black px-2.5 py-0.5 rounded-full animate-pulse uppercase tracking-wider">
-                                AGUARDANDO GESTOR
-                              </span>
-                            )}
-                            {audit.gestorAlignedDeliveryDate && audit.surplusFlowStatus !== 'ENVIADO' && (
-                              <span className="text-[10px] bg-blue-100 text-blue-900 font-black px-2.5 py-0.5 rounded-full uppercase tracking-wider">
-                                DATA ALINHADA PELO GESTOR
-                              </span>
-                            )}
-                          </div>
-                        </div>
+                      const currentObsType = cardObsTypes[audit.id] || (surpluses.length > 0 && deficits.length > 0 ? 'todos' : surpluses.length > 0 ? 'sobra' : deficits.length > 0 ? 'falta' : 'todos');
 
-                        {/* Surpluses & Deficits Lists */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          {/* Sobras */}
-                          <div className="bg-amber-50/30 border border-amber-100 rounded-xl p-4 space-y-2">
-                            <h4 className="text-xs font-black text-amber-900 uppercase flex items-center space-x-1.5">
-                              <span className="h-1.5 w-1.5 bg-amber-500 rounded-full" />
-                              <span>Sobra Detectada</span>
-                            </h4>
-                            {surpluses.length === 0 ? (
-                              <p className="text-slate-400 italic text-[11px]">Nenhuma sobra identificada.</p>
-                            ) : (
-                              <div className="space-y-1">
-                                {surpluses.map((s, idx) => (
-                                  <div key={idx} className="flex justify-between items-center text-xs text-amber-950 font-medium">
-                                    <div className="flex items-center space-x-1.5">
-                                      <span className="text-[9px] bg-amber-200 text-amber-900 font-black px-1 rounded font-mono">{s.type}</span>
-                                      <span>
-                                        {s.code && <span className="font-mono text-amber-900 font-bold mr-1">[{s.code}]</span>}
-                                        {s.description}
-                                      </span>
-                                    </div>
-                                    <span className="font-mono font-bold">+{s.qty} {s.unit}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                            {audit.reconciliationNotes && (
-                              <div className="mt-2.5 p-2 bg-amber-100/40 border border-amber-200 rounded-lg text-xxs text-amber-950">
-                                <div className="flex items-center space-x-1.5 mb-1.5 border-b border-amber-200/50 pb-1">
-                                  {surpluses.length > 0 && deficits.length > 0 ? (
-                                    <>
-                                      <Sparkles className="h-3.5 w-3.5 text-indigo-600" />
-                                      <span className="font-bold uppercase tracking-wider font-sans text-[9px] text-indigo-900">
-                                        Observação de Ambas Ocorrências (Todos)
-                                      </span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <ArrowUpCircle className="h-3.5 w-3.5 text-amber-600" />
-                                      <span className="font-bold uppercase tracking-wider font-sans text-[9px] text-amber-900">
-                                        Observação de Sobras
-                                      </span>
-                                    </>
-                                  )}
-                                </div>
-                                <p className="font-medium whitespace-pre-wrap">{audit.reconciliationNotes}</p>
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Faltas */}
-                          <div className="bg-red-50/20 border border-red-100 rounded-xl p-4 space-y-2">
-                            <h4 className="text-xs font-black text-red-950 uppercase flex items-center space-x-1.5">
-                              <span className="h-1.5 w-1.5 bg-red-500 rounded-full" />
-                              <span>Falta Detectada</span>
-                            </h4>
-                            {deficits.length === 0 ? (
-                              <p className="text-slate-400 italic text-[11px]">Nenhuma falta identificada.</p>
-                            ) : (
-                              <div className="space-y-1">
-                                {deficits.map((d, idx) => (
-                                  <div key={idx} className="flex justify-between items-center text-xs text-red-950 font-medium">
-                                    <div className="flex items-center space-x-1.5">
-                                      <span className="text-[9px] bg-red-200 text-red-900 font-black px-1 rounded font-mono">{d.type}</span>
-                                      <span>
-                                        {d.code && <span className="font-mono text-red-900 font-bold mr-1">[{d.code}]</span>}
-                                        {d.description}
-                                      </span>
-                                    </div>
-                                    <span className="font-mono font-bold font-bold">-{d.qty} {d.unit}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                            {audit.reconciliationNotes && (
-                              <div className="mt-2.5 p-2 bg-red-100/30 border border-red-200 rounded-lg text-xxs text-red-950">
-                                <div className="flex items-center space-x-1.5 mb-1.5 border-b border-red-200/40 pb-1">
-                                  {surpluses.length > 0 && deficits.length > 0 ? (
-                                    <>
-                                      <Sparkles className="h-3.5 w-3.5 text-indigo-600" />
-                                      <span className="font-bold uppercase tracking-wider font-sans text-[9px] text-indigo-900">
-                                        Observação de Ambas Ocorrências (Todos)
-                                      </span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <ArrowDownCircle className="h-3.5 w-3.5 text-red-600" />
-                                      <span className="font-bold uppercase tracking-wider font-sans text-[9px] text-red-900">
-                                        Observação de Faltas
-                                      </span>
-                                    </>
-                                  )}
-                                </div>
-                                <p className="font-medium whitespace-pre-wrap">{audit.reconciliationNotes}</p>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Monitoramento Form or Display */}
-                        <div className="bg-slate-50 rounded-xl p-4 border border-slate-150 space-y-3">
-                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block font-mono">
-                            Fluxo de Roteamento de Sobra (Ações e Registro)
-                          </span>
-
-                          {/* Interactive Section */}
-                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                      return (
+                        <div key={audit.id} className="bg-white rounded-xl border border-slate-200 shadow-xs p-6 space-y-4 hover:border-slate-300 transition">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
                             <div>
-                              <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-sans">NB (Código Cliente)</label>
-                              <input
-                                type="text"
-                                placeholder="NB do Cliente..."
-                                disabled={currentUser.role !== 'monitoramento' && currentUser.role !== 'gestor'}
-                                defaultValue={audit.clientCodeNB || ''}
-                                id={`nb_input_${audit.id}`}
-                                className="w-full text-xs p-2 bg-white border border-slate-200 rounded-lg disabled:bg-slate-100 disabled:text-slate-500 focus:outline-none font-mono"
-                              />
+                              <div className="flex items-center space-x-2">
+                                <span className="font-sans font-black text-sm text-slate-900 bg-slate-100 px-2 py-0.5 rounded font-mono">Mapa {audit.routeMap}</span>
+                                <span className="font-mono text-xs text-slate-500">{audit.plate}</span>
+                                <span className="text-xxs text-slate-400 font-mono">Data: {new Date(audit.arrivalDate + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
+                              </div>
+                              <div className="text-xxs text-slate-500 mt-1">
+                                Motorista: <strong>{getDriverName(audit.driverId)}</strong>
+                              </div>
                             </div>
 
-                            <div>
-                              <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-sans">Data de Entrega</label>
-                              <input
-                                type="date"
-                                disabled={currentUser.role !== 'monitoramento' && currentUser.role !== 'gestor'}
-                                defaultValue={audit.deliveryDate || ''}
-                                id={`date_input_${audit.id}`}
-                                className="w-full text-xs p-2 bg-white border border-slate-200 rounded-lg disabled:bg-slate-100 disabled:text-slate-500 focus:outline-none"
-                              />
+                            <div className="flex flex-wrap gap-1.5">
+                              {audit.surplusFlowStatus === 'ENVIADO' ? (
+                                <span className="text-[10px] bg-emerald-600 text-white font-black px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                                  ENVIADO
+                                </span>
+                              ) : isWithin30Days ? (
+                                <span className="text-[10px] bg-emerald-100 text-emerald-800 font-black px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                                  ENVIO NO PRAZO
+                                </span>
+                              ) : (
+                                <span className="text-[10px] bg-red-100 text-red-800 font-black px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                                  FORA DO PRAZO ({daysElapsed} dias)
+                                </span>
+                              )}
+
+                              {audit.surplusFlowStatus === 'ENCAMINHADO' && !audit.gestorAlignedDeliveryDate && (
+                                <span className="text-[10px] bg-amber-100 text-amber-900 font-black px-2.5 py-0.5 rounded-full animate-pulse uppercase tracking-wider">
+                                  AGUARDANDO GESTOR
+                                </span>
+                              )}
+                              {audit.gestorAlignedDeliveryDate && audit.surplusFlowStatus !== 'ENVIADO' && (
+                                <span className="text-[10px] bg-blue-100 text-blue-900 font-black px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                                  DATA ALINHADA PELO GESTOR
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Surpluses & Deficits Lists */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {/* Sobras */}
+                            <div className="bg-amber-50/30 border border-amber-100 rounded-xl p-4 space-y-2">
+                              <h4 className="text-xs font-black text-amber-900 uppercase flex items-center space-x-1.5">
+                                <span className="h-1.5 w-1.5 bg-amber-500 rounded-full" />
+                                <span>Sobra Detectada</span>
+                              </h4>
+                              {surpluses.length === 0 ? (
+                                <p className="text-slate-400 italic text-[11px]">Nenhuma sobra identificada.</p>
+                              ) : (
+                                <div className="space-y-1">
+                                  {surpluses.map((s, idx) => (
+                                    <div key={idx} className="flex justify-between items-center text-xs text-amber-950 font-medium">
+                                      <div className="flex items-center space-x-1.5">
+                                        <span className="text-[9px] bg-amber-200 text-amber-900 font-black px-1 rounded font-mono">{s.type}</span>
+                                        <span>
+                                          {s.code && <span className="font-mono text-amber-900 font-bold mr-1">[{s.code}]</span>}
+                                          {s.description}
+                                        </span>
+                                      </div>
+                                      <span className="font-mono font-bold">+{s.qty} {s.unit}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              {audit.reconciliationNotes && (
+                                <div className="mt-2.5 p-2 bg-amber-100/40 border border-amber-200 rounded-lg text-xxs text-amber-950">
+                                  <div className="flex items-center space-x-1.5 mb-1.5 border-b border-amber-200/50 pb-1">
+                                    {surpluses.length > 0 && deficits.length > 0 ? (
+                                      <>
+                                        <Sparkles className="h-3.5 w-3.5 text-indigo-600" />
+                                        <span className="font-bold uppercase tracking-wider font-sans text-[9px] text-indigo-900">
+                                          Observação de Ambas Ocorrências (Todos)
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <ArrowUpCircle className="h-3.5 w-3.5 text-amber-600" />
+                                        <span className="font-bold uppercase tracking-wider font-sans text-[9px] text-amber-900">
+                                          Observação de Sobras
+                                        </span>
+                                      </>
+                                    )}
+                                  </div>
+                                  <p className="font-medium whitespace-pre-wrap">{audit.reconciliationNotes}</p>
+                                </div>
+                              )}
                             </div>
 
-                            <div className="flex gap-2">
-                              {/* Monitoramento or Gestor Save Button */}
-                              {(currentUser.role === 'monitoramento' || currentUser.role === 'gestor') && (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const nbVal = (document.getElementById(`nb_input_${audit.id}`) as HTMLInputElement)?.value || '';
-                                      const dateVal = (document.getElementById(`date_input_${audit.id}`) as HTMLInputElement)?.value || '';
-                                      if (!nbVal || !dateVal) {
-                                        alert('Por favor, informe o código NB do cliente e a data de entrega.');
-                                        return;
-                                      }
-                                      const isGestor = currentUser.role === 'gestor';
-                                      const commentVal = (document.getElementById(`action_comment_${audit.id}`) as HTMLTextAreaElement)?.value || '';
-                                      const updated = audits.map(a => {
-                                        if (a.id === audit.id) {
-                                          return {
-                                            ...a,
-                                            clientCodeNB: nbVal,
-                                            deliveryDate: dateVal,
-                                            surplusFlowStatus: 'ENCAMINHADO' as const,
-                                            gestorAlignedDeliveryDate: isGestor ? true : false,
-                                            reconciliationNotes: commentVal || a.reconciliationNotes,
-                                            history: [
-                                              ...a.history,
-                                              {
-                                                timestamp: new Date().toISOString(),
-                                                action: isGestor ? 'Sobra Alinhada e Registrada pelo Gestor' : 'Previsão de Entrega da Sobra Informada',
-                                                user: currentUser.name,
-                                                details: isGestor 
-                                                  ? `NB: ${nbVal} | Data de Entrega: ${dateVal}. Alinhamento automático efetuado pelo Gestor.`
-                                                  : `NB: ${nbVal} | Data de Entrega: ${dateVal}. Encaminhado ao gestor para alinhamento.`
+                            {/* Faltas */}
+                            <div className="bg-red-50/20 border border-red-100 rounded-xl p-4 space-y-2">
+                              <h4 className="text-xs font-black text-red-950 uppercase flex items-center space-x-1.5">
+                                <span className="h-1.5 w-1.5 bg-red-500 rounded-full" />
+                                <span>Falta Detectada</span>
+                              </h4>
+                              {deficits.length === 0 ? (
+                                <p className="text-slate-400 italic text-[11px]">Nenhuma falta identificada.</p>
+                              ) : (
+                                <div className="space-y-1">
+                                  {deficits.map((d, idx) => (
+                                    <div key={idx} className="flex justify-between items-center text-xs text-red-950 font-medium">
+                                      <div className="flex items-center space-x-1.5">
+                                        <span className="text-[9px] bg-red-200 text-red-900 font-black px-1 rounded font-mono">{d.type}</span>
+                                        <span>
+                                          {d.code && <span className="font-mono text-red-900 font-bold mr-1">[{d.code}]</span>}
+                                          {d.description}
+                                        </span>
+                                      </div>
+                                      <span className="font-mono font-bold">-{d.qty} {d.unit}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              {audit.reconciliationNotes && (
+                                <div className="mt-2.5 p-2 bg-red-100/30 border border-red-200 rounded-lg text-xxs text-red-950">
+                                  <div className="flex items-center space-x-1.5 mb-1.5 border-b border-red-200/40 pb-1">
+                                    {surpluses.length > 0 && deficits.length > 0 ? (
+                                      <>
+                                        <Sparkles className="h-3.5 w-3.5 text-indigo-600" />
+                                        <span className="font-bold uppercase tracking-wider font-sans text-[9px] text-indigo-900">
+                                          Observação de Ambas Ocorrências (Todos)
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <ArrowDownCircle className="h-3.5 w-3.5 text-red-600" />
+                                        <span className="font-bold uppercase tracking-wider font-sans text-[9px] text-red-900">
+                                          Observação de Faltas
+                                        </span>
+                                      </>
+                                    )}
+                                  </div>
+                                  <p className="font-medium whitespace-pre-wrap">{audit.reconciliationNotes}</p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Action Forms */}
+                          <div className="bg-slate-50 rounded-xl p-4 border border-slate-150 space-y-3">
+                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block font-mono">
+                              Fluxo de Roteamento e Registro Operacional
+                            </span>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-sans">NB (Código Cliente)</label>
+                                <input
+                                  type="text"
+                                  placeholder="NB do Cliente..."
+                                  disabled={currentUser.role !== 'monitoramento' && currentUser.role !== 'gestor'}
+                                  defaultValue={audit.clientCodeNB || ''}
+                                  id={`nb_input_${audit.id}`}
+                                  className="w-full text-xs p-2 bg-white border border-slate-200 rounded-lg disabled:bg-slate-100 disabled:text-slate-500 focus:outline-none font-mono"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 font-sans">Data de Entrega</label>
+                                <input
+                                  type="date"
+                                  disabled={currentUser.role !== 'monitoramento' && currentUser.role !== 'gestor'}
+                                  defaultValue={audit.deliveryDate || ''}
+                                  id={`date_input_${audit.id}`}
+                                  className="w-full text-xs p-2 bg-white border border-slate-200 rounded-lg disabled:bg-slate-100 disabled:text-slate-500 focus:outline-none"
+                                />
+                              </div>
+
+                              <div className="flex gap-2">
+                                {(currentUser.role === 'monitoramento' || currentUser.role === 'gestor') && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const nbVal = (document.getElementById(`nb_input_${audit.id}`) as HTMLInputElement)?.value || '';
+                                        const dateVal = (document.getElementById(`date_input_${audit.id}`) as HTMLInputElement)?.value || '';
+                                        if (!nbVal || !dateVal) {
+                                          alert('Por favor, informe o código NB do cliente e a data de entrega.');
+                                          return;
+                                        }
+                                        const isGestor = currentUser.role === 'gestor';
+                                        const commentVal = (document.getElementById(`action_comment_${audit.id}`) as HTMLTextAreaElement)?.value || '';
+                                        const updated = audits.map(a => {
+                                          if (a.id === audit.id) {
+                                            return {
+                                              ...a,
+                                              clientCodeNB: nbVal,
+                                              deliveryDate: dateVal,
+                                              surplusFlowStatus: 'ENCAMINHADO' as const,
+                                              gestorAlignedDeliveryDate: isGestor ? true : false,
+                                              reconciliationNotes: commentVal || a.reconciliationNotes,
+                                              history: [
+                                                ...a.history,
+                                                {
+                                                  timestamp: new Date().toISOString(),
+                                                  action: isGestor ? 'Sobra Alinhada e Registrada pelo Gestor' : 'Previsão de Entrega da Sobra Informada',
+                                                  user: currentUser.name,
+                                                  details: isGestor 
+                                                    ? `NB: ${nbVal} | Data de Entrega: ${dateVal}. Alinhamento automático efetuado pelo Gestor.`
+                                                    : `NB: ${nbVal} | Data de Entrega: ${dateVal}. Encaminhado ao gestor para alinhamento.`
+                                                }
+                                              ]
+                                            };
+                                          }
+                                          return a;
+                                        });
+                                        onSaveAudits(updated);
+                                        if (isGestor) {
+                                          alert('Dados salvos e data de entrega alinhada pelo Gestor!');
+                                        } else {
+                                          alert('Dados salvos! Uma notificação foi enviada ao gestor para alinhamento da data.');
+                                        }
+                                      }}
+                                      className="flex-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs py-2 px-3 rounded-lg transition cursor-pointer shadow-xs text-center font-sans"
+                                    >
+                                      {currentUser.role === 'gestor' ? 'Salvar e Alinhar' : 'Salvar e Encaminhar'}
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const commentVal = (document.getElementById(`action_comment_${audit.id}`) as HTMLTextAreaElement)?.value || '';
+                                        requestConfirm(
+                                          '❓ Confirmar Baixa Direta',
+                                          'Tem certeza que deseja realizar a Baixa Direta desta ocorrência (sobra/falta)?\n\nEsta ação arquiva a ocorrência diretamente sem exigir mais alinhamentos ou vales financeiros.',
+                                          () => {
+                                            const updated = audits.map(a => {
+                                              if (a.id === audit.id) {
+                                                const isSobra = surpluses.length > 0;
+                                                return {
+                                                  ...a,
+                                                  surplusFlowStatus: 'BAIXADO' as const,
+                                                  surplusActionStatus: 'baixado_direto' as const,
+                                                  deficitActionStatus: 'baixado_direto' as const,
+                                                  reconciliationNotes: commentVal || a.reconciliationNotes,
+                                                  correctiveActionNotes: commentVal 
+                                                    ? `Baixa direta efetuada com observações: ${commentVal}`
+                                                    : (isSobra 
+                                                        ? 'Baixa direta efetuada pelo painel operacional (sobra).'
+                                                        : 'Baixa direta efetuada pelo painel operacional (falta).'),
+                                                  history: [
+                                                    ...a.history,
+                                                    {
+                                                      timestamp: new Date().toISOString(),
+                                                      action: isSobra ? 'Baixa Direta de Sobras Realizada' : 'Baixa Direta de Faltas Realizada',
+                                                      user: currentUser.name,
+                                                      details: commentVal 
+                                                        ? `Baixa direta efetuada pelo Gestor/Monitoramento. Observação: ${commentVal}`
+                                                        : (isSobra 
+                                                            ? 'Baixa direta efetuada pelo Gestor/Monitoramento no painel operacional (Sobra).'
+                                                            : 'Baixa direta efetuada pelo Gestor/Monitoramento no painel operacional (Falta).')
+                                                    }
+                                                  ]
+                                                };
                                               }
-                                            ]
-                                          };
-                                        }
-                                        return a;
-                                      });
-                                      onSaveAudits(updated);
-                                      if (isGestor) {
-                                        alert('Dados salvos e data de entrega alinhada pelo Gestor!');
-                                      } else {
-                                        alert('Dados salvos! Uma notificação foi enviada ao gestor para alinhamento da data.');
-                                      }
-                                    }}
-                                    className="flex-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs py-2 px-3 rounded-lg transition cursor-pointer shadow-sm text-center font-sans"
-                                  >
-                                    {currentUser.role === 'gestor' ? 'Salvar e Alinhar' : 'Salvar e Encaminhar'}
-                                  </button>
-
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const commentVal = (document.getElementById(`action_comment_${audit.id}`) as HTMLTextAreaElement)?.value || '';
-                                      requestConfirm(
-                                        '❓ Confirmar Baixa Direta',
-                                        'Tem certeza que deseja realizar a Baixa Direta desta ocorrência (sobra/falta)?\n\nEsta ação arquiva a ocorrência diretamente sem exigir mais alinhamentos ou vales financeiros.',
-                                        () => {
-                                          const updated = audits.map(a => {
-                                            if (a.id === audit.id) {
-                                              const isSobra = surpluses.length > 0;
-                                              return {
-                                                ...a,
-                                                surplusFlowStatus: 'BAIXADO' as const,
-                                                surplusActionStatus: 'baixado_direto' as const,
-                                                deficitActionStatus: 'baixado_direto' as const,
-                                                reconciliationNotes: commentVal || a.reconciliationNotes,
-                                                correctiveActionNotes: commentVal 
-                                                  ? `Baixa direta efetuada com observações: ${commentVal}`
-                                                  : (isSobra 
-                                                      ? 'Baixa direta efetuada pelo painel operacional (sobra).'
-                                                      : 'Baixa direta efetuada pelo painel operacional (falta).'),
-                                                history: [
-                                                  ...a.history,
-                                                  {
-                                                    timestamp: new Date().toISOString(),
-                                                    action: isSobra ? 'Baixa Direta de Sobras Realizada' : 'Baixa Direta de Faltas Realizada',
-                                                    user: currentUser.name,
-                                                    details: commentVal 
-                                                      ? `Baixa direta efetuada pelo Gestor/Monitoramento. Observação: ${commentVal}`
-                                                      : (isSobra 
-                                                          ? 'Baixa direta efetuada pelo Gestor/Monitoramento no painel operacional (Sobra).'
-                                                          : 'Baixa direta efetuada pelo Gestor/Monitoramento no painel operacional (Falta).')
-                                                  }
-                                                ]
-                                              };
-                                            }
-                                            return a;
-                                          });
-                                          onSaveAudits(updated);
-                                          alert('Baixa direta realizada com sucesso!');
-                                        }
-                                      );
-                                    }}
-                                    className="flex-1 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs py-2 px-3 rounded-lg transition cursor-pointer shadow-sm text-center flex items-center justify-center space-x-1.5 font-sans"
-                                  >
-                                    <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                                    <span>Baixa Direta</span>
-                                  </button>
-                                </>
-                              )}
-
-                              {/* Gestor Aligned Notification Button */}
-                              {currentUser.role === 'gestor' && audit.surplusFlowStatus === 'ENCAMINHADO' && !audit.gestorAlignedDeliveryDate && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const commentVal = (document.getElementById(`action_comment_${audit.id}`) as HTMLTextAreaElement)?.value || '';
-                                    const updated = audits.map(a => {
-                                      if (a.id === audit.id) {
-                                        return {
-                                          ...a,
-                                          gestorAlignedDeliveryDate: true,
-                                          reconciliationNotes: commentVal || a.reconciliationNotes,
-                                          history: [
-                                            ...a.history,
-                                            {
-                                              timestamp: new Date().toISOString(),
-                                              action: 'Data de Entrega Alinhada pelo Gestor',
-                                              user: currentUser.name,
-                                              details: `Data de Entrega alinhada: ${a.deliveryDate}`
-                                            }
-                                          ]
-                                        };
-                                      }
-                                      return a;
-                                    });
-                                    onSaveAudits(updated);
-                                    alert('Data de entrega alinhada com sucesso!');
-                                  }}
-                                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2 px-3 rounded-lg transition cursor-pointer shadow-sm text-center font-sans"
-                                >
-                                  Alinhar Data de Entrega
-                                </button>
-                              )}
-
-                              {/* Dar Baixa (Resolvido) button for Auxiliar or anyone after encaminhado */}
-                              {audit.surplusFlowStatus === 'ENCAMINHADO' && (
-                                <button
-                                  type="button"
-                                  disabled={!audit.gestorAlignedDeliveryDate && currentUser.role === 'auxiliar_logistica'}
-                                  onClick={() => {
-                                    const commentVal = (document.getElementById(`action_comment_${audit.id}`) as HTMLTextAreaElement)?.value || '';
-                                    const updated = audits.map(a => {
-                                      if (a.id === audit.id) {
-                                        return {
-                                          ...a,
-                                          surplusFlowStatus: 'ENVIADO' as const,
-                                          surplusActionStatus: 'enviado_cliente' as const,
-                                          reconciliationNotes: commentVal || a.reconciliationNotes,
-                                          history: [
-                                            ...a.history,
-                                            {
-                                              timestamp: new Date().toISOString(),
-                                              action: 'Baixa de Sobras Realizada - Enviado',
-                                              user: currentUser.name,
-                                              details: `Status de fluxo finalizado como ENVIADO.`
-                                            }
-                                          ]
-                                        };
-                                      }
-                                      return a;
-                                    });
-                                    onSaveAudits(updated);
-                                    alert('Baixa efetuada! O status foi alterado para ENVIADO.');
-                                  }}
-                                  className={`flex-1 font-bold text-xs py-2 px-3 rounded-lg transition shadow-sm text-center cursor-pointer font-sans ${
-                                    audit.gestorAlignedDeliveryDate || currentUser.role === 'gestor'
-                                      ? 'bg-emerald-600 hover:bg-emerald-700 text-white' 
-                                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                                  }`}
-                                  title={!audit.gestorAlignedDeliveryDate && currentUser.role !== 'gestor' ? 'Aguardando o gestor alinhar a data de entrega para permitir a baixa' : 'Dar baixa e marcar como enviado'}
-                                >
-                                  Dar Baixa (Enviado)
-                                </button>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Show saved values */}
-                          {(audit.clientCodeNB || audit.deliveryDate) && (
-                            <div className="flex flex-wrap gap-4 pt-2 text-xs border-t border-slate-200 text-slate-600">
-                              <div><strong>Código NB:</strong> <span className="font-mono bg-white border border-slate-200 px-1 py-0.5 rounded text-slate-800">{audit.clientCodeNB || 'N/A'}</span></div>
-                              <div><strong>Previsão de Entrega:</strong> <span className="font-mono bg-white border border-slate-200 px-1 py-0.5 rounded text-slate-800">{audit.deliveryDate ? new Date(audit.deliveryDate + 'T00:00:00').toLocaleDateString('pt-BR') : 'N/A'}</span></div>
-                              {audit.gestorAlignedDeliveryDate && (
-                                <div className="text-emerald-600 font-bold flex items-center space-x-1">
-                                  <span>✓ Alinhado pelo Gestor</span>
-                                </div>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Ações Sugeridas & Seção de Observações Salvas */}
-                          <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 mt-3 space-y-3">
-                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-2">
-                              <div className="flex items-center space-x-1.5 text-amber-800">
-                                <AlertCircle className="h-4 w-4 text-amber-500 shrink-0" />
-                                <span className="text-xs font-black uppercase tracking-wider font-sans font-bold">Ação Sugerida do Sistema</span>
-                              </div>
-                              {/* Botão de gerar vale financeiro se houver faltas */}
-                              {deficits.length > 0 && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const valorFalta = audit.items.reduce((acc, i) => {
-                                      const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-                                      const fQty = i.fiscalQty ?? 0;
-                                      const comodato = i.comodatoQty ?? 0;
-                                      const recolha = i.recolhaQty ?? 0;
-                                      const netDiff = (phys + comodato - recolha) - fQty;
-                                      if (netDiff < 0) return acc + (Math.abs(netDiff) * getSkuClosedPrice(i.productCode, i.cost ?? 45.0));
-                                      return acc;
-                                    }, 0) + audit.assets.reduce((acc, a) => {
-                                      if (isExemptAsset(a.assetId, a.assetName)) return acc;
-
-                                      const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-                                      const fQty = a.fiscalQty ?? 0;
-                                      const comodato = a.comodatoQty ?? 0;
-                                      const recolha = a.recolhaQty ?? 0;
-                                      const netDiff = (phys + comodato - recolha) - fQty;
-                                      if (netDiff < 0) {
-                                        const unitCost = getAssetUnitCost(a.assetId, a.assetName, a.cost);
-                                        return acc + (Math.abs(netDiff) * unitCost);
-                                      }
-                                      return acc;
-                                    }, 0);
-
-                                    const descFalta = deficits.map(d => `${d.qty}x ${d.code ? `[${d.code}] ` : ''}${d.description}`).join(', ');
-                                    const motoristaNome = getDriverName(audit.driverId);
-
-                                    const novoVale = {
-                                      id: 'val_' + Date.now(),
-                                      auditId: audit.id,
-                                      routeMap: audit.routeMap,
-                                      colaboradorId: audit.driverId,
-                                      colaboradorName: motoristaNome,
-                                      colaboradorRole: 'MOTORISTA',
-                                      valor: Number(valorFalta.toFixed(2)) || 80.0,
-                                      descricao: `Falta de: ${descFalta}. Mapa: ${audit.routeMap}`,
-                                      dataGeracao: new Date().toISOString().split('T')[0],
-                                      status: 'PENDENTE_ASSINATURA' as const,
-                                      observacao: 'Gerado automaticamente por desvios identificados na aferição física.'
-                                    };
-
-                                    const updatedAudits = audits.map(a => {
-                                      if (a.id === audit.id) {
-                                        return {
-                                          ...a,
-                                          history: [
-                                            ...a.history,
-                                            {
-                                              timestamp: new Date().toISOString(),
-                                              action: 'Vale Financeiro Gerado',
-                                              user: currentUser.name,
-                                              details: `Vale de R$ ${valorFalta.toFixed(2)} gerado para o colaborador ${motoristaNome}. Descrição: ${descFalta}.`
-                                            }
-                                          ]
-                                        };
-                                      }
-                                      return a;
-                                    });
-
-                                    onSaveVales([...vales, novoVale]);
-                                    onSaveAudits(updatedAudits);
-                                    alert(`Sucesso! Vale financeiro autogerado no valor de R$ ${novoVale.valor.toFixed(2)} para ${novoVale.colaboradorName}.`);
-                                  }}
-                                  className="bg-red-600 hover:bg-red-700 text-white font-extrabold text-[10px] uppercase py-1 px-2.5 rounded-lg transition shadow-xs cursor-pointer flex items-center space-x-1 shrink-0"
-                                >
-                                  <FileText className="h-3 w-3" />
-                                  <span>Gerar Vale Financeiro</span>
-                                </button>
-                              )}
-                            </div>
-
-                            <p className="text-[11px] text-slate-600 leading-relaxed">
-                              {deficits.length > 0 
-                                ? `Detectada Falta Física de ${deficits.map(d => `${d.qty} ${d.unit} de ${d.code ? `[${d.code}] ` : ''}${d.description}`).join(', ')}. Ação sugerida: Gerar e emitir Vale de Desconto para o motorista/ajudante responsável ou coletar justificativa assinada pelo fiscal de expedição.`
-                                : `Detectada Sobra Física de ${surpluses.map(s => `${s.qty} ${s.unit} de ${s.code ? `[${s.code}] ` : ''}${s.description}`).join(', ')}. Ação sugerida: Identificar e inserir o código NB do cliente, alinhar data estimada de entrega e encaminhar ao gestor para efetivar baixa física.`
-                              }
-                            </p>
-
-                            {/* Caixa de Comentário / Observação de Ação */}
-                            <div className="space-y-1.5 pt-1">
-                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                                <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">Comentários e Observações da Ação Executada</label>
-                                <div className="flex items-center space-x-1">
-                                  {currentObsType === 'todos' ? (
-                                    <span className="inline-flex items-center space-x-1 text-[9px] font-black bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full uppercase tracking-wider font-sans animate-pulse">
-                                      <Sparkles className="h-3 w-3 text-indigo-600" />
-                                      <span>AMBOS (SOBRA & FALTA)</span>
-                                    </span>
-                                  ) : currentObsType === 'sobra' ? (
-                                    <span className="inline-flex items-center space-x-1 text-[9px] font-black bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full uppercase tracking-wider font-sans">
-                                      <ArrowUpCircle className="h-3 w-3 text-amber-600" />
-                                      <span>APLICA-SE A SOBRA</span>
-                                    </span>
-                                  ) : currentObsType === 'falta' ? (
-                                    <span className="inline-flex items-center space-x-1 text-[9px] font-black bg-red-100 text-red-800 px-2 py-0.5 rounded-full uppercase tracking-wider font-sans">
-                                      <ArrowDownCircle className="h-3 w-3 text-red-600" />
-                                      <span>APLICA-SE A FALTA</span>
-                                    </span>
-                                  ) : null}
-                                </div>
-                              </div>
-
-                              {/* Classificação do comentário (Sobra / Falta / Todos) */}
-                              <div className="flex items-center space-x-2 pt-0.5 pb-1">
-                                <span className="text-[9px] font-bold text-slate-400 uppercase font-sans">Classificar como:</span>
-                                <button
-                                  type="button"
-                                  onClick={() => setCardObsTypes(prev => ({ ...prev, [audit.id]: 'sobra' }))}
-                                  className={`flex items-center space-x-1 text-[8px] font-extrabold px-2 py-0.5 rounded transition border cursor-pointer ${
-                                    currentObsType === 'sobra'
-                                      ? 'bg-emerald-600 text-white border-emerald-700 shadow-3xs'
-                                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                                  }`}
-                                >
-                                  <ArrowUpCircle className="h-2.5 w-2.5" />
-                                  <span>Sobra</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setCardObsTypes(prev => ({ ...prev, [audit.id]: 'falta' }))}
-                                  className={`flex items-center space-x-1 text-[8px] font-extrabold px-2 py-0.5 rounded transition border cursor-pointer ${
-                                    currentObsType === 'falta'
-                                      ? 'bg-rose-600 text-white border-rose-700 shadow-3xs'
-                                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                                  }`}
-                                >
-                                  <ArrowDownCircle className="h-2.5 w-2.5" />
-                                  <span>Falta</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setCardObsTypes(prev => ({ ...prev, [audit.id]: 'todos' }))}
-                                  className={`flex items-center space-x-1 text-[8px] font-extrabold px-2 py-0.5 rounded transition border cursor-pointer ${
-                                    currentObsType === 'todos'
-                                      ? 'bg-slate-600 text-white border-slate-700 shadow-3xs'
-                                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                                  }`}
-                                >
-                                  <AlertCircle className="h-2.5 w-2.5" />
-                                  <span>Todos</span>
-                                </button>
-                              </div>
-
-                              <textarea
-                                id={`action_comment_${audit.id}`}
-                                key={audit.reconciliationNotes || ''}
-                                rows={2}
-                                placeholder="Coloque observações, observações de recontagem, decisões de vales ou andamento da reentrega..."
-                                defaultValue={audit.reconciliationNotes || ''}
-                                className="w-full text-xs p-2.5 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500 transition leading-normal font-sans"
-                              />
-                              <div className="flex justify-between items-center">
-                                <span className="text-[9px] text-slate-400 font-medium">Os comentários salvos aparecem diretamente neste card e no histórico.</span>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const valInput = (document.getElementById(`action_comment_${audit.id}`) as HTMLTextAreaElement)?.value || '';
-                                    const currentObsType = cardObsTypes[audit.id] || (surpluses.length > 0 && deficits.length > 0 ? 'todos' : surpluses.length > 0 ? 'sobra' : deficits.length > 0 ? 'falta' : 'todos');
-                                    
-                                    // 1. Save in the audit session
-                                    const updated = audits.map(a => {
-                                      if (a.id === audit.id) {
-                                        return {
-                                          ...a,
-                                          reconciliationNotes: valInput,
-                                          history: [
-                                            ...a.history,
-                                            {
-                                              timestamp: new Date().toISOString(),
-                                              action: 'Observação da Ação Salva no Card',
-                                              user: currentUser.name,
-                                              details: `[Classificação: ${currentObsType.toUpperCase()}] ${valInput}`
-                                            }
-                                          ]
-                                        };
-                                      }
-                                      return a;
-                                    });
-                                    onSaveAudits(updated);
-
-                                    // 2. Sync to the matching ImportedRoute so it's beautifully visual in Monitoramento
-                                    const matchingRoute = importedRoutes.find(r => r.routeMap.toUpperCase() === audit.routeMap.toUpperCase());
-                                    if (matchingRoute && onSaveImportedRoutes) {
-                                      const newObs: RouteObservation = {
-                                        id: `obs_${Date.now()}`,
-                                        author: 'Logística',
-                                        text: valInput.trim(),
-                                        timestamp: new Date().toLocaleDateString('pt-BR') + ' ' + new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-                                        type: currentObsType
-                                      };
-                                      const currentObsList = matchingRoute.routeObservations || [];
-                                      const updatedObsList = [...currentObsList, newObs];
-                                      const combinedString = updatedObsList.map(o => `[${o.author} - ${o.timestamp}]: ${o.text}`).join('\n');
-                                      
-                                      const updatedRoutes = importedRoutes.map(r => {
-                                        if (r.id === matchingRoute.id) {
-                                          return {
-                                            ...r,
-                                            routeObservations: updatedObsList,
-                                            discrepancyObservation: combinedString
-                                          };
-                                        }
-                                        return r;
-                                      });
-                                      onSaveImportedRoutes(updatedRoutes);
-                                    }
-
-                                    alert('Comentário e observação do card salvos e classificados com sucesso!');
-                                  }}
-                                  className="bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-[10px] uppercase py-1 px-3 rounded-lg transition cursor-pointer"
-                                >
-                                  Salvar Comentário
-                                </button>
+                                              return a;
+                                            });
+                                            onSaveAudits(updated);
+                                            alert('Baixa direta realizada com sucesso!');
+                                          }
+                                        );
+                                      }}
+                                      className="flex-1 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs py-2 px-3 rounded-lg transition cursor-pointer shadow-xs text-center flex items-center justify-center space-x-1.5 font-sans"
+                                    >
+                                      <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                                      <span>Baixa Direta</span>
+                                    </button>
+                                  </>
+                                )}
                               </div>
                             </div>
                           </div>
                         </div>
-                      </div>
-                    );
-                  });
-                })()}
-              </div>
+                      );
+                    });
+                  })()}
+                </div>
+              )}
             </div>
           )}
 
           {/* Section: Gestão de Vales (Vales View) */}
           {activeTab === 'vales_view' && (
             <div className="space-y-6 animate-fade-in" id="tab_vales_view">
-              <div className="bg-white p-6 rounded-xl border border-slate-200 space-y-2">
-                <div className="flex items-center space-x-2 text-slate-900">
-                  <FileText className="h-6 w-6 text-red-500 animate-pulse" />
-                  <h2 className="font-sans font-bold text-lg uppercase">Controle & Emissão de Vales de Desvio</h2>
+              {/* TOP HEADER & ACTION BANNER */}
+              <div className="bg-white p-5 sm:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                <div className="flex flex-col lg:flex-row justify-between lg:items-center gap-4 border-b border-slate-100 pb-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center space-x-2 text-slate-900">
+                      <FileText className="h-6 w-6 text-red-600 animate-pulse" />
+                      <h2 className="font-sans font-black text-xl uppercase tracking-tight text-slate-900">
+                        Controle & Emissão de Vales de Desvio
+                      </h2>
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      Registro, auditoria contábil, rateio entre colaboradores e emissão de termos de responsabilidade com demonstrativo completo de P.A. e A.G.
+                    </p>
+                  </div>
+
+                  {/* PROMINENT TOP PDF BUTTON */}
+                  <div className="flex items-center gap-2.5 flex-wrap shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => exportValesSummaryPDF(filteredVales)}
+                      className="bg-red-700 hover:bg-red-800 active:bg-red-900 text-white font-black text-xs sm:text-sm px-4 py-2.5 rounded-xl transition shadow-md hover:shadow-lg flex items-center gap-2 cursor-pointer border border-red-800"
+                      title="Exportar Relatório Analítico Consolidado de Vales em PDF com demonstrativo completo de P.A. e A.G. para as datas filtradas"
+                    >
+                      <FileText className="h-4 w-4" />
+                      <span>Relatório PDF Geral (P.A. e A.G.)</span>
+                      <span className="bg-red-900/80 text-white text-[10px] font-mono font-bold px-2 py-0.5 rounded-full">
+                        {filteredVales.length} {filteredVales.length === 1 ? 'Vale' : 'Vales'}
+                      </span>
+                    </button>
+                  </div>
                 </div>
-                <p className="text-xs text-slate-500">
-                  Registro, controle e assinatura de termos de responsabilidade de vales para desvios de conferência (produtos faltantes ou ativos de giro danificados).
-                </p>
+
+                {/* DATE FILTER CONTROLS & SHORTCUTS */}
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/90 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200/70 pb-2">
+                    <div className="flex items-center space-x-2 text-slate-800">
+                      <Calendar className="h-4 w-4 text-amber-500" />
+                      <span className="font-sans font-bold text-xs uppercase tracking-wide">
+                        Filtro de Datas dos Vales (Dia Específico ou Período)
+                      </span>
+                    </div>
+
+                    {(valesFilterDate || valesFilterStartDate || valesFilterEndDate) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setValesFilterDate('');
+                          setValesFilterStartDate('');
+                          setValesFilterEndDate('');
+                        }}
+                        className="text-[10px] font-bold text-red-600 hover:text-red-800 bg-red-50 hover:bg-red-100 px-2 py-0.5 rounded border border-red-200 transition cursor-pointer flex items-center space-x-1"
+                      >
+                        <X className="h-3 w-3" />
+                        <span>Limpar Filtro de Datas</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+                    {/* Dia Específico */}
+                    <div className="md:col-span-4 space-y-1">
+                      <label className="block text-[10px] font-bold text-slate-600 uppercase font-sans">
+                        Filtrar Dia Específico
+                      </label>
+                      <input
+                        type="date"
+                        value={valesFilterDate}
+                        onChange={(e) => {
+                          setValesFilterDate(e.target.value);
+                          if (e.target.value) {
+                            setValesFilterStartDate('');
+                            setValesFilterEndDate('');
+                          }
+                        }}
+                        className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 transition font-mono"
+                      />
+                    </div>
+
+                    {/* Data Inicial (De) */}
+                    <div className="md:col-span-3 space-y-1">
+                      <label className="block text-[10px] font-bold text-slate-600 uppercase font-sans">
+                        Período: De (Data Inicial)
+                      </label>
+                      <input
+                        type="date"
+                        value={valesFilterStartDate}
+                        onChange={(e) => {
+                          setValesFilterStartDate(e.target.value);
+                          if (e.target.value) setValesFilterDate('');
+                        }}
+                        className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 transition font-mono"
+                      />
+                    </div>
+
+                    {/* Data Final (Até) */}
+                    <div className="md:col-span-3 space-y-1">
+                      <label className="block text-[10px] font-bold text-slate-600 uppercase font-sans">
+                        Período: Até (Data Final)
+                      </label>
+                      <input
+                        type="date"
+                        value={valesFilterEndDate}
+                        onChange={(e) => {
+                          setValesFilterEndDate(e.target.value);
+                          if (e.target.value) setValesFilterDate('');
+                        }}
+                        className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 transition font-mono"
+                      />
+                    </div>
+
+                    {/* Clear Button */}
+                    <div className="md:col-span-2 flex flex-col justify-end">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setValesFilterDate('');
+                          setValesFilterStartDate('');
+                          setValesFilterEndDate('');
+                          setValeSearchTerm('');
+                          setValeFilterCategory('todos');
+                        }}
+                        disabled={!valesFilterDate && !valesFilterStartDate && !valesFilterEndDate && !valeSearchTerm && valeFilterCategory === 'todos'}
+                        className="w-full py-2 bg-slate-200 hover:bg-slate-300 disabled:opacity-40 text-slate-800 text-[10px] font-black uppercase rounded-lg transition cursor-pointer text-center"
+                      >
+                        Limpar Tudo
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Quick Preset Buttons */}
+                  <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-200/60 text-xs">
+                    <span className="text-[10px] font-extrabold text-slate-500 uppercase font-sans flex items-center space-x-1 mr-1">
+                      <Calendar className="h-3 w-3 text-amber-500" />
+                      <span>Atalhos Rápidos:</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const today = getTodayYYYYMMDD();
+                        setValesFilterDate(today);
+                        setValesFilterStartDate('');
+                        setValesFilterEndDate('');
+                      }}
+                      className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold transition cursor-pointer border ${
+                        valesFilterDate === getTodayYYYYMMDD()
+                          ? 'bg-amber-500 text-slate-950 border-amber-600 shadow-2xs'
+                          : 'bg-white hover:bg-amber-50 text-slate-700 border-slate-200'
+                      }`}
+                    >
+                      📅 Hoje
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const yesterday = getLastNDaysYYYYMMDD(1);
+                        setValesFilterDate(yesterday);
+                        setValesFilterStartDate('');
+                        setValesFilterEndDate('');
+                      }}
+                      className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold transition cursor-pointer border ${
+                        valesFilterDate === getLastNDaysYYYYMMDD(1)
+                          ? 'bg-amber-500 text-slate-950 border-amber-600 shadow-2xs'
+                          : 'bg-white hover:bg-amber-50 text-slate-700 border-slate-200'
+                      }`}
+                    >
+                      🗓️ Ontem
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setValesFilterStartDate(getLastNDaysYYYYMMDD(7));
+                        setValesFilterEndDate(getTodayYYYYMMDD());
+                        setValesFilterDate('');
+                      }}
+                      className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold transition cursor-pointer border ${
+                        valesFilterStartDate === getLastNDaysYYYYMMDD(7) && valesFilterEndDate === getTodayYYYYMMDD()
+                          ? 'bg-amber-500 text-slate-950 border-amber-600 shadow-2xs'
+                          : 'bg-white hover:bg-amber-50 text-slate-700 border-slate-200'
+                      }`}
+                    >
+                      🗓️ Últimos 7 Dias
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setValesFilterStartDate(getMonthStartYYYYMMDD());
+                        setValesFilterEndDate(getTodayYYYYMMDD());
+                        setValesFilterDate('');
+                      }}
+                      className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold transition cursor-pointer border ${
+                        valesFilterStartDate === getMonthStartYYYYMMDD() && valesFilterEndDate === getTodayYYYYMMDD()
+                          ? 'bg-amber-500 text-slate-950 border-amber-600 shadow-2xs'
+                          : 'bg-white hover:bg-amber-50 text-slate-700 border-slate-200'
+                      }`}
+                    >
+                      📊 Este Mês
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setValesFilterDate('');
+                        setValesFilterStartDate('');
+                        setValesFilterEndDate('');
+                      }}
+                      className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold transition cursor-pointer border ${
+                        !valesFilterDate && !valesFilterStartDate && !valesFilterEndDate
+                          ? 'bg-slate-800 text-white border-slate-900 shadow-2xs'
+                          : 'bg-white hover:bg-slate-50 text-slate-600 border-slate-200'
+                      }`}
+                    >
+                      🌐 Todas as Datas
+                    </button>
+                  </div>
+                </div>
+
+                {/* METRICS SUMMARY STRIP */}
+                {(() => {
+                  let totalValesValue = 0;
+                  let totalPaCost = 0;
+                  let totalAgCost = 0;
+                  let pendentes = 0;
+                  let assinados = 0;
+                  let compensados = 0;
+
+                  filteredVales.forEach(v => {
+                    const shortages = getValeAuditShortages(v);
+                    totalValesValue += Number(v.valor) || 0;
+                    totalPaCost += shortages.paTotalCost;
+                    totalAgCost += shortages.agTotalCost;
+                    if (v.status === 'PENDENTE_ASSINATURA') pendentes++;
+                    else if (v.status === 'ASSINADO') assinados++;
+                    else if (v.status === 'COMPENSADO') compensados++;
+                  });
+
+                  return (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2.5 pt-1">
+                      <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                        <span className="text-[9px] font-bold uppercase text-slate-500 block">Vales Selecionados</span>
+                        <span className="text-base font-black font-mono text-slate-900">{filteredVales.length}</span>
+                        <span className="text-[9px] text-slate-400 block font-medium">de {vales.length} vales totais</span>
+                      </div>
+                      <div className="bg-red-50/70 p-2.5 rounded-xl border border-red-200">
+                        <span className="text-[9px] font-bold uppercase text-red-800 block">Valor Total a Descontar</span>
+                        <span className="text-base font-black font-mono text-red-700">R$ {totalValesValue.toFixed(2)}</span>
+                        <span className="text-[9px] text-red-600 block font-medium">Soma total dos vales</span>
+                      </div>
+                      <div className="bg-blue-50/70 p-2.5 rounded-xl border border-blue-200">
+                        <span className="text-[9px] font-bold uppercase text-blue-800 block">Faltas P.A. (Subtotal)</span>
+                        <span className="text-base font-black font-mono text-blue-700">R$ {totalPaCost.toFixed(2)}</span>
+                        <span className="text-[9px] text-blue-600 block font-medium">Produtos acabados</span>
+                      </div>
+                      <div className="bg-purple-50/70 p-2.5 rounded-xl border border-purple-200">
+                        <span className="text-[9px] font-bold uppercase text-purple-800 block">Faltas A.G. (Subtotal)</span>
+                        <span className="text-base font-black font-mono text-purple-700">R$ {totalAgCost.toFixed(2)}</span>
+                        <span className="text-[9px] text-purple-600 block font-medium">Vasilhames / caixas</span>
+                      </div>
+                      <div className="bg-amber-50/70 p-2.5 rounded-xl border border-amber-200">
+                        <span className="text-[9px] font-bold uppercase text-amber-800 block">Pendentes de Assinatura</span>
+                        <span className="text-base font-black font-mono text-amber-700">{pendentes}</span>
+                        <span className="text-[9px] text-amber-600 block font-medium">Aguardando colab.</span>
+                      </div>
+                      <div className="bg-emerald-50/70 p-2.5 rounded-xl border border-emerald-200">
+                        <span className="text-[9px] font-bold uppercase text-emerald-800 block">Assinados / Compensados</span>
+                        <span className="text-base font-black font-mono text-emerald-700">{assinados + compensados}</span>
+                        <span className="text-[9px] text-emerald-600 block font-medium">{assinados} assin. / {compensados} comp.</span>
+                      </div>
+                    </div>
+                  );
+                })()}
+
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 w-full min-w-0">
@@ -9201,23 +10280,51 @@ export default function FiscalView({
                             <span className="font-bold truncate block">{valeAssociatedInfo.plate || '---'}</span>
                           </div>
                           {valeAssociatedInfo.hasShortage && (
-                            <div className="col-span-2 bg-white/80 p-2 rounded-lg border border-amber-200/70 mt-1">
-                              <div className="flex items-center justify-between mb-1">
-                                <span className="font-sans text-[9px] uppercase font-bold text-amber-800">
-                                  Itens em Falta ({valeAssociatedInfo.items?.length || 0} divergências)
+                            <div className="col-span-2 bg-white/90 p-2.5 rounded-lg border border-amber-200/80 mt-1 space-y-2">
+                              <div className="flex items-center justify-between border-b border-amber-100 pb-1">
+                                <span className="font-sans text-[10px] uppercase font-bold text-amber-900">
+                                  Resumo Geral de Faltas ({valeAssociatedInfo.items?.length || 0} desvios)
                                 </span>
-                                <span className="font-extrabold text-xs text-amber-900">
+                                <span className="font-mono font-black text-xs text-red-600">
                                   Total: R$ {valeAssociatedInfo.totalValue?.toFixed(2)}
                                 </span>
                               </div>
-                              <div className="space-y-1 max-h-24 overflow-y-auto pr-1">
-                                {valeAssociatedInfo.items?.map((it, idx) => (
-                                  <div key={idx} className="flex justify-between items-center text-[10px] text-slate-700 bg-amber-50/50 px-1.5 py-0.5 rounded">
-                                    <span className="truncate max-w-[200px] font-medium">{it.qty}x {it.name}</span>
-                                    <span className="font-bold shrink-0 text-slate-900">R$ {it.totalCost.toFixed(2)}</span>
+
+                              {/* Faltas de Produtos Acabados (P.A.) */}
+                              {valeAssociatedInfo.paItems && valeAssociatedInfo.paItems.length > 0 && (
+                                <div className="space-y-1">
+                                  <div className="flex items-center justify-between text-[9px] font-bold uppercase text-blue-900 bg-blue-50/80 px-1.5 py-0.5 rounded border border-blue-200">
+                                    <span>📦 Produtos Acabados (P.A.)</span>
+                                    <span>Subtotal: R$ {(valeAssociatedInfo.paTotal || 0).toFixed(2)}</span>
                                   </div>
-                                ))}
-                              </div>
+                                  <div className="space-y-0.5 max-h-20 overflow-y-auto pr-1">
+                                    {valeAssociatedInfo.paItems.map((it, idx) => (
+                                      <div key={idx} className="flex justify-between items-center text-[9.5px] text-slate-700 bg-blue-50/30 px-1.5 py-0.5 rounded">
+                                        <span className="truncate max-w-[200px] font-medium">{it.qty}cx {it.name}</span>
+                                        <span className="font-bold shrink-0 text-slate-900 font-mono">R$ {it.totalCost.toFixed(2)}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Faltas de Ativos de Giro (A.G.) */}
+                              {valeAssociatedInfo.agItems && valeAssociatedInfo.agItems.length > 0 && (
+                                <div className="space-y-1">
+                                  <div className="flex items-center justify-between text-[9px] font-bold uppercase text-purple-900 bg-purple-50/80 px-1.5 py-0.5 rounded border border-purple-200">
+                                    <span>🔄 Ativos de Giro / Vasilhames (A.G.)</span>
+                                    <span>Subtotal: R$ {(valeAssociatedInfo.agTotal || 0).toFixed(2)}</span>
+                                  </div>
+                                  <div className="space-y-0.5 max-h-20 overflow-y-auto pr-1">
+                                    {valeAssociatedInfo.agItems.map((it, idx) => (
+                                      <div key={idx} className="flex justify-between items-center text-[9.5px] text-slate-700 bg-purple-50/30 px-1.5 py-0.5 rounded">
+                                        <span className="truncate max-w-[200px] font-medium">{it.qty}x {it.name}</span>
+                                        <span className="font-bold shrink-0 text-slate-900 font-mono">R$ {it.totalCost.toFixed(2)}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
@@ -9722,7 +10829,22 @@ export default function FiscalView({
                               <p className="text-[11px] text-slate-700 font-medium truncate mt-0.5">
                                 {m.driverName} • Placa {m.plate}
                               </p>
-                              <p className="text-[10px] text-slate-500 line-clamp-1 mt-0.5">
+                              
+                              {/* Separação explícita de P.A. e A.G. nos mapas com falta */}
+                              <div className="flex items-center gap-1.5 mt-1 flex-wrap font-mono text-[9px]">
+                                {m.paValue > 0 && (
+                                  <span className="bg-blue-50 text-blue-800 border border-blue-200 px-1.5 py-0.5 rounded font-bold">
+                                    📦 P.A.: R$ {m.paValue.toFixed(2)} ({m.paCount} cx)
+                                  </span>
+                                )}
+                                {m.agValue > 0 && (
+                                  <span className="bg-purple-50 text-purple-800 border border-purple-200 px-1.5 py-0.5 rounded font-bold">
+                                    🔄 A.G.: R$ {m.agValue.toFixed(2)} ({m.agCount} un)
+                                  </span>
+                                )}
+                              </div>
+
+                              <p className="text-[10px] text-slate-500 line-clamp-1 mt-1">
                                 {m.description}
                               </p>
                             </div>
@@ -9745,180 +10867,320 @@ export default function FiscalView({
                     </div>
                   )}
 
-                  <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4 shadow-xs min-w-0">
-                    <h3 className="font-sans font-bold text-sm text-slate-900 border-b border-slate-100 pb-2 flex items-center justify-between font-bold">
-                      <span className="flex items-center space-x-1.5">
-                        <FileText className="h-4 w-4 text-slate-600" />
-                        <span>Histórico Geral de Vales Emitidos</span>
-                      </span>
-                      <span className="text-xxs bg-slate-100 text-slate-600 font-mono px-2 py-0.5 rounded font-black">
-                        Total: {vales.length} Vales
-                      </span>
-                    </h3>
+                  <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4 shadow-xs min-w-0">
+                    <div className="border-b border-slate-100 pb-3 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                      <div>
+                        <div className="flex items-center space-x-2">
+                          <FileText className="h-4 w-4 text-slate-700" />
+                          <h3 className="font-sans font-black text-sm text-slate-900 uppercase tracking-wide">
+                            Histórico Geral de Vales Emitidos
+                          </h3>
+                        </div>
+                        <p className="text-xxs text-slate-500 mt-0.5">
+                          Gestão de autorizações de desconto por faltas de P.A. (Produtos Acabados) e A.G. (Ativos de Giro / Vasilhames).
+                        </p>
+                      </div>
 
-                  {vales.length === 0 ? (
-                    <div className="text-center py-16 text-slate-400 text-xs italic">
-                      Nenhum vale emitido no sistema até o momento.
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {/* Botão Oficial de Exportação de Relatório PDF Consolidado */}
+                        <button
+                          type="button"
+                          onClick={() => exportValesSummaryPDF(filteredVales)}
+                          className="bg-red-700 hover:bg-red-800 text-white font-extrabold text-xs px-3.5 py-2 rounded-lg transition shadow-xs flex items-center gap-1.5 cursor-pointer shrink-0"
+                          title="Exportar Relatório Analítico Consolidado de Vales em PDF com demonstrativo completo de P.A. e A.G."
+                        >
+                          <FileText className="h-3.5 w-3.5" />
+                          <span>Relatório PDF (P.A. e A.G.)</span>
+                        </button>
+
+                        <span className="text-xxs bg-slate-100 text-slate-700 font-mono px-2.5 py-1.5 rounded-lg font-black border border-slate-200 shrink-0">
+                          Total: {filteredVales.length} {filteredVales.length === 1 ? 'Vale' : 'Vales'}
+                        </span>
+                      </div>
                     </div>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse">
-                        <thead>
-                          <tr className="border-b border-slate-150 text-[10px] text-slate-400 font-bold uppercase tracking-wider font-sans bg-slate-50/55">
-                            <th className="py-2.5 px-3">Responsável</th>
-                            <th className="py-2.5 px-3">Descrição / Motivo</th>
-                            <th className="py-2.5 px-3">Mapa</th>
-                            <th className="py-2.5 px-3 text-right">Valor</th>
-                            <th className="py-2.5 px-3 text-center">Status</th>
-                            <th className="py-2.5 px-3 text-center">Ações</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 text-xs text-slate-700">
-                          {vales.map((vale) => (
-                            <tr key={vale.id} className="hover:bg-slate-50/50 transition">
-                              <td className="py-3 px-3 font-medium">
-                                <span className="block font-bold text-slate-900">{vale.colaboradorName}</span>
-                                <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
-                                  <span className="text-[9px] text-slate-400 font-mono block uppercase">{vale.colaboradorRole}</span>
-                                  {vale.colaboradoresAdicionais && vale.colaboradoresAdicionais.length > 0 && (
-                                    <span className="bg-amber-100 text-amber-800 text-[8.5px] font-bold px-1.5 py-0.2 rounded border border-amber-200" title={vale.colaboradoresAdicionais.map(c => `${c.name} (${c.role})`).join(', ')}>
-                                      +{vale.colaboradoresAdicionais.length} co-responsável{vale.colaboradoresAdicionais.length > 1 ? 'is' : ''}
-                                    </span>
-                                  )}
-                                </div>
-                              </td>
-                              <td className="py-3 px-3">
-                                <div className="flex items-center gap-1.5 flex-wrap">
-                                  <span className="text-slate-800 font-medium line-clamp-1">{vale.descricao}</span>
-                                  {vale.quantidade !== undefined && vale.quantidade > 0 && (
-                                    <span className="bg-slate-100 text-slate-700 font-mono text-[9px] font-bold px-1.5 py-0.2 rounded border border-slate-200">
-                                      {vale.quantidade} vol.
-                                    </span>
-                                  )}
-                                </div>
-                                <span className="text-[10px] text-slate-400 block">Emitido: {new Date(vale.dataGeracao + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
-                              </td>
-                              <td className="py-3 px-3 font-mono text-[10px]">
-                                {vale.routeMap !== 'AVULSO' ? `Mapa ${vale.routeMap}` : 'AVULSO'}
-                              </td>
-                              <td className="py-3 px-3 text-right font-mono font-bold text-slate-900">
-                                R$ {(Number(vale.valor) || 0).toFixed(2)}
-                              </td>
-                              <td className="py-3 px-3 text-center">
-                                <span className={`inline-block px-2 py-0.5 text-[9px] font-black uppercase rounded-full ${
-                                  vale.status === 'COMPENSADO'
-                                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                                    : vale.status === 'ASSINADO'
-                                      ? 'bg-blue-100 text-blue-800 border border-blue-200'
-                                      : 'bg-amber-100 text-amber-800 border border-amber-200 animate-pulse'
-                                }`}>
-                                  {vale.status === 'PENDENTE_ASSINATURA' ? 'Pendente Assinatura' : vale.status === 'ASSINADO' ? 'Termo Assinado' : 'Compensado Fin.'}
-                                </span>
-                              </td>
-                              <td className="py-3 px-3">
-                                <div className="flex justify-center items-center gap-1.5">
-                                  {/* Botão de Visualizar Termo */}
-                                  <button
-                                    type="button"
-                                    onClick={() => setViewingVale(vale)}
-                                    className="p-1 text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded cursor-pointer transition"
-                                    title="Visualizar Termo de Autorização de Desconto"
-                                  >
-                                    <Eye className="h-3.5 w-3.5" />
-                                  </button>
 
-                                  {/* Botão de Editar Vale */}
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const count = 1 + (vale.colaboradoresAdicionais?.length || 0);
-                                      const shares = calculateRateioShares(Number(vale.valor) || 0, count);
-                                      setEditingVale({
-                                        ...vale,
-                                        colaboradorValor: vale.colaboradorValor !== undefined ? vale.colaboradorValor : shares[0],
-                                        colaboradoresAdicionais: (vale.colaboradoresAdicionais || []).map((c, i) => ({
-                                          ...c,
-                                          valor: c.valor !== undefined ? c.valor : shares[i + 1]
-                                        }))
-                                      });
-                                    }}
-                                    className="p-1 text-amber-600 hover:text-amber-900 bg-amber-50 hover:bg-amber-100 rounded cursor-pointer transition"
-                                    title="Editar Vale (Alterar quantidade, valor, colaboradores ou descrição)"
-                                  >
-                                    <Edit3 className="h-3.5 w-3.5" />
-                                  </button>
-                                  {vale.status === 'PENDENTE_ASSINATURA' && (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setUploadingValeId(vale.id);
-                                      }}
-                                      className="px-1.5 py-0.5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-[9px] rounded transition uppercase cursor-pointer"
-                                      title="Importar vale assinado manualmente (PDF ou JPG)"
-                                    >
-                                      Assinar
-                                    </button>
-                                  )}
+                    {/* Barra de Filtros e Busca de Vales */}
+                    <div className="flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-center justify-between">
+                      <div className="relative flex-1">
+                        <Search className="h-3.5 w-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type="text"
+                          value={valeSearchTerm}
+                          onChange={(e) => setValeSearchTerm(e.target.value)}
+                          placeholder="Buscar por colaborador, número do mapa ou descrição..."
+                          className="w-full text-xs pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500 font-sans"
+                        />
+                        {valeSearchTerm && (
+                          <button
+                            type="button"
+                            onClick={() => setValeSearchTerm('')}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        )}
+                      </div>
 
-                                  {/* O gestor pode compensar qualquer vale ativo (pendente ou assinado) ao faturar no fim do mês */}
-                                  {(vale.status === 'ASSINADO' || (vale.status === 'PENDENTE_ASSINATURA' && currentUser.role === 'gestor')) && (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        requestConfirm(
-                                          'Confirmar Compensação',
-                                          `Tem certeza de que deseja faturar e marcar este vale no valor de R$ ${(Number(vale.valor) || 0).toFixed(2)} para ${vale.colaboradorName} como COMPENSADO?`,
-                                          () => {
-                                            const updated = vales.map(v => v.id === vale.id ? { ...v, status: 'COMPENSADO' as const } : v);
-                                            onSaveVales?.(updated);
-                                          }
-                                        );
-                                      }}
-                                      className="px-1.5 py-0.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-[9px] rounded transition uppercase cursor-pointer"
-                                      title="Marcar como Compensado no Financeiro"
-                                    >
-                                      Compensar
-                                    </button>
-                                  )}
+                      {/* Botões de Filtro Rápido de Categorias P.A. / A.G. */}
+                      <div className="flex items-center gap-1 overflow-x-auto pb-1 sm:pb-0">
+                        <button
+                          type="button"
+                          onClick={() => setValeFilterCategory('todos')}
+                          className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg transition whitespace-nowrap cursor-pointer ${
+                            valeFilterCategory === 'todos'
+                              ? 'bg-slate-900 text-white'
+                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                          }`}
+                        >
+                          Todos ({vales.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setValeFilterCategory('pa')}
+                          className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg transition whitespace-nowrap cursor-pointer ${
+                            valeFilterCategory === 'pa'
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200'
+                          }`}
+                        >
+                          Só P.A.
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setValeFilterCategory('ag')}
+                          className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg transition whitespace-nowrap cursor-pointer ${
+                            valeFilterCategory === 'ag'
+                              ? 'bg-purple-600 text-white'
+                              : 'bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200'
+                          }`}
+                        >
+                          Só A.G.
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setValeFilterCategory('ambos')}
+                          className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg transition whitespace-nowrap cursor-pointer ${
+                            valeFilterCategory === 'ambos'
+                              ? 'bg-amber-600 text-white'
+                              : 'bg-amber-50 text-amber-800 hover:bg-amber-100 border border-amber-200'
+                          }`}
+                        >
+                          P.A. + A.G.
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setValeFilterCategory('pendente')}
+                          className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg transition whitespace-nowrap cursor-pointer ${
+                            valeFilterCategory === 'pendente'
+                              ? 'bg-red-600 text-white'
+                              : 'bg-red-50 text-red-700 hover:bg-red-100 border border-red-200'
+                          }`}
+                        >
+                          Pendentes
+                        </button>
+                      </div>
+                    </div>
 
-                                  {/* Botão de download do PDF assinado */}
-                                  {(vale.status === 'ASSINADO' || vale.status === 'COMPENSADO') && vale.signedPdfUrl && (
-                                    <a
-                                      href={vale.signedPdfUrl}
-                                      download={vale.signedPdfName || `vale_assinado_${vale.id}.pdf`}
-                                      className="p-1 text-emerald-600 hover:text-emerald-900 bg-emerald-50 hover:bg-emerald-100 rounded cursor-pointer transition flex items-center justify-center"
-                                      title={`Baixar PDF Assinado: ${vale.signedPdfName || 'PDF'}`}
-                                    >
-                                      <FileText className="h-3.5 w-3.5" />
-                                    </a>
-                                  )}
+                  {(() => {
+                    const filtered = filteredVales;
 
-                                  {/* Deletar Vale */}
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      requestConfirm(
-                                        'Excluir Vale',
-                                        `Deseja realmente excluir este vale no valor de R$ ${(Number(vale.valor) || 0).toFixed(2)} para ${vale.colaboradorName}?`,
-                                        () => {
-                                          const updated = vales.filter(v => v.id !== vale.id);
-                                          onSaveVales(updated);
-                                        }
-                                      );
-                                    }}
-                                    className="p-1 text-red-600 hover:text-red-950 hover:bg-red-50 rounded cursor-pointer transition"
-                                    title="Excluir Vale"
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  </button>
-                                </div>
-                              </td>
+                    if (filtered.length === 0) {
+                      return (
+                        <div className="text-center py-16 text-slate-400 text-xs italic bg-slate-50/50 rounded-lg border border-dashed border-slate-200">
+                          Nenhum vale encontrado para os filtros selecionados.
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="border-b border-slate-150 text-[10px] text-slate-400 font-bold uppercase tracking-wider font-sans bg-slate-50/55">
+                              <th className="py-2.5 px-3">Responsável</th>
+                              <th className="py-2.5 px-3">Composição Faltas (P.A. / A.G.)</th>
+                              <th className="py-2.5 px-3">Mapa</th>
+                              <th className="py-2.5 px-3 text-right">Valor Total</th>
+                              <th className="py-2.5 px-3 text-center">Status</th>
+                              <th className="py-2.5 px-3 text-center">Ações</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 text-xs text-slate-700">
+                            {filtered.map((vale) => {
+                              const shortages = getValeAuditShortages(vale);
+                              return (
+                                <tr key={vale.id} className="hover:bg-slate-50/50 transition">
+                                  <td className="py-3 px-3 font-medium">
+                                    <span className="block font-bold text-slate-900">{vale.colaboradorName}</span>
+                                    <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                                      <span className="text-[9px] text-slate-400 font-mono block uppercase">{vale.colaboradorRole}</span>
+                                      {vale.colaboradoresAdicionais && vale.colaboradoresAdicionais.length > 0 && (
+                                        <span className="bg-amber-100 text-amber-800 text-[8.5px] font-bold px-1.5 py-0.2 rounded border border-amber-200" title={vale.colaboradoresAdicionais.map(c => `${c.name} (${c.role})`).join(', ')}>
+                                          +{vale.colaboradoresAdicionais.length} co-responsável{vale.colaboradoresAdicionais.length > 1 ? 'is' : ''}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td className="py-3 px-3">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className="text-slate-800 font-medium line-clamp-1">{vale.descricao}</span>
+                                    </div>
+
+                                    {/* Badges distintivas informando faltas de P.A. e A.G. na linha */}
+                                    <div className="flex items-center gap-1.5 mt-1 flex-wrap font-mono text-[9px]">
+                                      {shortages.paTotalCost > 0 && (
+                                        <span className="bg-blue-50 text-blue-700 border border-blue-200 px-1.5 py-0.2 rounded font-bold" title={`Faltas de P.A.: ${shortages.paTotalDiff} caixas`}>
+                                          📦 P.A.: R$ {shortages.paTotalCost.toFixed(2)}
+                                        </span>
+                                      )}
+                                      {shortages.agTotalCost > 0 && (
+                                        <span className="bg-purple-50 text-purple-700 border border-purple-200 px-1.5 py-0.2 rounded font-bold" title={`Faltas de A.G.: ${shortages.agTotalDiff} unidades`}>
+                                          🔄 A.G.: R$ {shortages.agTotalCost.toFixed(2)}
+                                        </span>
+                                      )}
+                                      {shortages.paTotalCost === 0 && shortages.agTotalCost === 0 && vale.quantidade !== undefined && vale.quantidade > 0 && (
+                                        <span className="bg-slate-100 text-slate-700 text-[8.5px] font-bold px-1.5 py-0.2 rounded border border-slate-200">
+                                          {vale.quantidade} vol.
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    <span className="text-[10px] text-slate-400 block mt-0.5">Emitido: {new Date(vale.dataGeracao + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
+                                  </td>
+                                  <td className="py-3 px-3 font-mono text-[10px]">
+                                    {vale.routeMap !== 'AVULSO' ? `Mapa ${vale.routeMap}` : 'AVULSO'}
+                                  </td>
+                                  <td className="py-3 px-3 text-right font-mono font-bold text-slate-900">
+                                    R$ {(Number(vale.valor) || 0).toFixed(2)}
+                                  </td>
+                                  <td className="py-3 px-3 text-center">
+                                    <span className={`inline-block px-2 py-0.5 text-[9px] font-black uppercase rounded-full ${
+                                      vale.status === 'COMPENSADO'
+                                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                        : vale.status === 'ASSINADO'
+                                          ? 'bg-blue-100 text-blue-800 border border-blue-200'
+                                          : 'bg-amber-100 text-amber-800 border border-amber-200 animate-pulse'
+                                    }`}>
+                                      {vale.status === 'PENDENTE_ASSINATURA' ? 'Pendente Assinatura' : vale.status === 'ASSINADO' ? 'Termo Assinado' : 'Compensado Fin.'}
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-3">
+                                    <div className="flex justify-center items-center gap-1.5">
+                                      {/* Botão de Visualizar Termo */}
+                                      <button
+                                        type="button"
+                                        onClick={() => setViewingVale(vale)}
+                                        className="p-1 text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded cursor-pointer transition"
+                                        title="Visualizar Termo de Autorização de Desconto"
+                                      >
+                                        <Eye className="h-3.5 w-3.5" />
+                                      </button>
+
+                                      {/* Botão de Imprimir Termo Individual */}
+                                      <button
+                                        type="button"
+                                        onClick={() => handlePrintVale(vale)}
+                                        className="p-1 text-amber-700 hover:text-amber-950 bg-amber-50 hover:bg-amber-100 rounded cursor-pointer transition"
+                                        title="Imprimir / Salvar PDF deste Vale (A4 Timbrado)"
+                                      >
+                                        <Printer className="h-3.5 w-3.5" />
+                                      </button>
+
+                                      {/* Botão de Editar Vale */}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const count = 1 + (vale.colaboradoresAdicionais?.length || 0);
+                                          const shares = calculateRateioShares(Number(vale.valor) || 0, count);
+                                          setEditingVale({
+                                            ...vale,
+                                            colaboradorValor: vale.colaboradorValor !== undefined ? vale.colaboradorValor : shares[0],
+                                            colaboradoresAdicionais: (vale.colaboradoresAdicionais || []).map((c, i) => ({
+                                              ...c,
+                                              valor: c.valor !== undefined ? c.valor : shares[i + 1]
+                                            }))
+                                          });
+                                        }}
+                                        className="p-1 text-amber-600 hover:text-amber-900 bg-amber-50 hover:bg-amber-100 rounded cursor-pointer transition"
+                                        title="Editar Vale (Alterar quantidade, valor, colaboradores ou descrição)"
+                                      >
+                                        <Edit3 className="h-3.5 w-3.5" />
+                                      </button>
+
+                                      {vale.status === 'PENDENTE_ASSINATURA' && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setUploadingValeId(vale.id);
+                                          }}
+                                          className="px-1.5 py-0.5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-[9px] rounded transition uppercase cursor-pointer"
+                                          title="Importar vale assinado manualmente (PDF ou JPG)"
+                                        >
+                                          Assinar
+                                        </button>
+                                      )}
+
+                                      {/* O gestor pode compensar qualquer vale ativo (pendente ou assinado) ao faturar no fim do mês */}
+                                      {(vale.status === 'ASSINADO' || (vale.status === 'PENDENTE_ASSINATURA' && currentUser.role === 'gestor')) && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            requestConfirm(
+                                              'Confirmar Compensação',
+                                              `Tem certeza de que deseja faturar e marcar este vale no valor de R$ ${(Number(vale.valor) || 0).toFixed(2)} para ${vale.colaboradorName} como COMPENSADO?`,
+                                              () => {
+                                                const updated = vales.map(v => v.id === vale.id ? { ...v, status: 'COMPENSADO' as const } : v);
+                                                onSaveVales?.(updated);
+                                              }
+                                            );
+                                          }}
+                                          className="px-1.5 py-0.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-[9px] rounded transition uppercase cursor-pointer"
+                                          title="Marcar como Compensado no Financeiro"
+                                        >
+                                          Compensar
+                                        </button>
+                                      )}
+
+                                      {/* Botão de download do PDF assinado */}
+                                      {(vale.status === 'ASSINADO' || vale.status === 'COMPENSADO') && vale.signedPdfUrl && (
+                                        <a
+                                          href={vale.signedPdfUrl}
+                                          download={vale.signedPdfName || `vale_assinado_${vale.id}.pdf`}
+                                          className="p-1 text-emerald-600 hover:text-emerald-900 bg-emerald-50 hover:bg-emerald-100 rounded cursor-pointer transition flex items-center justify-center"
+                                          title={`Baixar PDF Assinado: ${vale.signedPdfName || 'PDF'}`}
+                                        >
+                                          <FileText className="h-3.5 w-3.5" />
+                                        </a>
+                                      )}
+
+                                      {/* Deletar Vale */}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          requestConfirm(
+                                            'Excluir Vale',
+                                            `Deseja realmente excluir este vale no valor de R$ ${(Number(vale.valor) || 0).toFixed(2)} para ${vale.colaboradorName}?`,
+                                            () => {
+                                              const updated = vales.filter(v => v.id !== vale.id);
+                                              onSaveVales(updated);
+                                            }
+                                          );
+                                        }}
+                                        className="p-1 text-red-600 hover:text-red-950 hover:bg-red-50 rounded cursor-pointer transition"
+                                        title="Excluir Vale"
+                                      >
+                                        <Trash2 className="h-3.5 w-3.5" />
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             </div>
@@ -10018,63 +11280,21 @@ export default function FiscalView({
                       ? (associatedAudit.conferenteId === 'conferente_01' ? 'João Conferente' : associatedAudit.conferenteId === 'conferente_02' ? 'Pedro Ajudante' : associatedAudit.conferenteId) 
                       : 'N/A');
 
-                // Calculate detailed shortages/deficits for this audit (PA/AG)
-                const detailedShortages: Array<{ code: string; name: string; expected: number; found: number; comodato: number; recolha: number; diff: number; cost: number; totalCost: number }> = [];
+                // Calculate detailed shortages/deficits separated by P.A. and A.G.
+                const {
+                  paShortages,
+                  agShortages,
+                  paTotalCost,
+                  agTotalCost,
+                  paTotalDiff,
+                  agTotalDiff,
+                  grandTotalCost,
+                  grandTotalDiff,
+                  hasPA,
+                  hasAG
+                } = getValeAuditShortages(viewingVale);
 
-                if (associatedAudit) {
-                  associatedAudit.items.forEach(i => {
-                    const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : (i.physicalQty ?? 0);
-                    const fisc = i.fiscalQty ?? 0;
-                    const comodato = i.comodatoQty ?? 0;
-                    const recolha = i.recolhaQty ?? 0;
-                    const netDiff = (phys + comodato - recolha) - fisc;
-                    if (netDiff < 0) {
-                      const diff = Math.abs(netDiff);
-                      const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
-                      detailedShortages.push({
-                        code: i.productCode,
-                        name: i.productDescription || 'Produto Sem Descrição',
-                        expected: fisc,
-                        found: phys,
-                        comodato,
-                        recolha,
-                        diff,
-                        cost: unitCost,
-                        totalCost: diff * unitCost
-                      });
-                    }
-                  });
-
-                  associatedAudit.assets.forEach(a => {
-                    if (isExemptAsset(a.assetId, a.assetName)) return;
-
-                    const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : (a.physicalQty ?? 0);
-                    const fisc = a.fiscalQty ?? 0;
-                    const comodato = a.comodatoQty ?? 0;
-                    const recolha = a.recolhaQty ?? 0;
-                    const netDiff = (phys + comodato - recolha) - fisc;
-                    if (netDiff < 0) {
-                      const diff = Math.abs(netDiff);
-                      const unitCost = getAssetUnitCost(a.assetId, a.assetName, a.cost);
-                      const assetCode = getAssetCode(a.assetId, a.assetName);
-                      const assetName = a.assetName || getAssetCanonicalName(assetCode) || 'Ativo de Giro';
-                      detailedShortages.push({
-                        code: assetCode,
-                        name: assetName,
-                        expected: fisc,
-                        found: phys,
-                        comodato,
-                        recolha,
-                        diff,
-                        cost: unitCost,
-                        totalCost: diff * unitCost
-                      });
-                    }
-                  });
-                }
-
-                const calculatedShortagesSum = detailedShortages.reduce((s, it) => s + it.totalCost, 0);
-                const finalModalValeValue = Math.max(Number(viewingVale.valor) || 0, calculatedShortagesSum);
+                const finalModalValeValue = Math.max(Number(viewingVale.valor) || 0, grandTotalCost);
 
                 return (
                   <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
@@ -10125,12 +11345,12 @@ export default function FiscalView({
                           )}, autorizo(amos) expressamente a empresa <strong>PAU BRASIL DISTRIBUIDORA LTDA</strong> a descontar em folha de pagamento a importância líquida de <strong>R$ {finalModalValeValue.toFixed(2)}</strong> ({finalModalValeValue.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}), referente aos desvios físicos ou avarias constatados no retorno do <strong>{viewingVale.routeMap !== 'AVULSO' ? `Mapa de Carga nº ${viewingVale.routeMap}` : 'Mapa de Carga Avulso'}</strong>.
                         </p>
 
-                        {calculatedShortagesSum > Number(viewingVale.valor) && (
+                        {grandTotalCost > Number(viewingVale.valor) && (
                           <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 text-xs flex flex-col sm:flex-row items-center justify-between gap-2 text-amber-900">
                             <div className="flex items-center space-x-2">
                               <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
                               <span>
-                                <strong>Divergências de Ativos de Giro Integradas:</strong> Faltas de ativos (como Garrafeiras / Vasilhames) totalizam <strong>R$ {calculatedShortagesSum.toFixed(2)}</strong>.
+                                <strong>Divergências Físicas de Inventário Integradas:</strong> Faltas de P.A. e A.G. apuradas na conferência totalizam <strong>R$ {grandTotalCost.toFixed(2)}</strong>.
                               </span>
                             </div>
                             {onSaveVales && (
@@ -10138,10 +11358,10 @@ export default function FiscalView({
                                 type="button"
                                 onClick={() => {
                                   const totalColabs = 1 + (viewingVale.colaboradoresAdicionais?.length || 0);
-                                  const shares = calculateRateioShares(calculatedShortagesSum, totalColabs);
+                                  const shares = calculateRateioShares(grandTotalCost, totalColabs);
                                   const updated: Vale = {
                                     ...viewingVale,
-                                    valor: calculatedShortagesSum,
+                                    valor: grandTotalCost,
                                     colaboradorValor: shares[0],
                                     colaboradoresAdicionais: viewingVale.colaboradoresAdicionais?.map((c, idx) => ({
                                       ...c,
@@ -10151,7 +11371,7 @@ export default function FiscalView({
                                   const nextVales = vales.map(v => v.id === updated.id ? updated : v);
                                   onSaveVales(nextVales);
                                   setViewingVale(updated);
-                                  alert(`Vale atualizado com sucesso! Novo valor apurado: R$ ${calculatedShortagesSum.toFixed(2)}.`);
+                                  alert(`Vale atualizado com sucesso! Novo valor apurado: R$ ${grandTotalCost.toFixed(2)}.`);
                                 }}
                                 className="bg-amber-600 hover:bg-amber-700 text-white font-bold text-[10px] uppercase px-3 py-1.5 rounded-lg transition shrink-0 cursor-pointer shadow-xs"
                               >
@@ -10168,7 +11388,7 @@ export default function FiscalView({
                             <div><strong>Mapa de Carga:</strong> <span className="font-mono bg-white border border-slate-200 px-1.5 py-0.5 rounded font-bold ml-1">{viewingVale.routeMap}</span></div>
                             <div><strong>Placa do Veículo:</strong> <span className="font-mono bg-white border border-slate-200 px-1.5 py-0.5 rounded font-bold uppercase ml-1">{vehiclePlate}</span></div>
                             <div><strong>Data da Viagem:</strong> <span className="text-slate-700 ml-1">{arrivalDateFormatted}</span></div>
-                            <div><strong>Volumes / Quantidade:</strong> <span className="font-bold text-slate-900 ml-1">{viewingVale.quantidade !== undefined ? `${viewingVale.quantidade} volumes/itens` : (detailedShortages.length > 0 ? `${detailedShortages.reduce((s, d) => s + d.diff, 0)} volumes/itens` : 'Conforme laudo')}</span></div>
+                            <div><strong>Volumes / Quantidade:</strong> <span className="font-bold text-slate-900 ml-1">{viewingVale.quantidade !== undefined ? `${viewingVale.quantidade} volumes/itens` : (grandTotalDiff > 0 ? `${grandTotalDiff} volumes/itens (${paTotalDiff} cx P.A. + ${agTotalDiff} un A.G.)` : 'Conforme laudo')}</span></div>
                           </div>
                           <div className="space-y-1.5">
                             <span className="text-slate-500 text-[10px] font-bold uppercase tracking-wider block border-b border-slate-200 pb-1">Colaboradores da Operação & Aferição</span>
@@ -10183,54 +11403,133 @@ export default function FiscalView({
                           </div>
                         </div>
 
-                        {/* Detail Table of Involved Assets & Shortages */}
-                        <div className="space-y-2">
-                          <span className="text-slate-900 font-bold text-xs uppercase tracking-wider block">Divergências de Inventário Constatadas (Faltas de P.A / A.G):</span>
-                          
-                          {detailedShortages.length > 0 ? (
-                            <div className="border border-slate-200 rounded-xl overflow-hidden text-xs font-sans shadow-2xs">
-                              <table className="w-full text-left border-collapse">
-                                <thead className="bg-slate-100 text-slate-700 font-bold uppercase text-[10px] border-b border-slate-200">
-                                  <tr>
-                                    <th className="py-2 px-3">Cód.</th>
-                                    <th className="py-2 px-3">Descrição</th>
-                                    <th className="py-2 px-3 text-center">Faturado</th>
-                                    <th className="py-2 px-3 text-center">Conferido</th>
-                                    <th className="py-2 px-3 text-center text-amber-600">Comodato</th>
-                                    <th className="py-2 px-3 text-center text-red-600">Falta</th>
-                                    <th className="py-2 px-3 text-right">Unit.</th>
-                                    <th className="py-2 px-3 text-right">Subtotal</th>
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-200 text-slate-800 text-xs">
-                                  {detailedShortages.slice(0, 10).map(item => (
-                                    <tr key={item.code} className="hover:bg-slate-50">
-                                      <td className="py-2 px-3 font-mono font-bold text-slate-600">{item.code}</td>
-                                      <td className="py-2 px-3 font-medium truncate max-w-[200px]">{item.name}</td>
-                                      <td className="py-2 px-3 text-center font-mono">{item.expected}</td>
-                                      <td className="py-2 px-3 text-center font-mono">{item.found}</td>
-                                      <td className="py-2 px-3 text-center font-mono font-bold text-amber-600">{item.comodato > 0 ? item.comodato : '-'}</td>
-                                      <td className="py-2 px-3 text-center font-mono text-red-600 font-bold">-{item.diff}</td>
-                                      <td className="py-2 px-3 text-right font-mono">R$ {(Number(item.cost) || 0).toFixed(2)}</td>
-                                      <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">R$ {(Number(item.totalCost) || 0).toFixed(2)}</td>
-                                    </tr>
-                                  ))}
-                                  {detailedShortages.length > 10 && (
-                                    <tr className="bg-slate-50 text-[10px] italic text-slate-500">
-                                      <td colSpan={5} className="py-2 px-3">+ {detailedShortages.length - 10} outros itens detalhados no sistema de conferência</td>
-                                      <td className="py-2 px-3 text-center font-mono font-bold text-red-600">-{detailedShortages.slice(10).reduce((s, d) => s + d.diff, 0)}</td>
-                                      <td className="py-2 px-3 text-right">---</td>
-                                      <td className="py-2 px-3 text-right font-mono font-bold">R$ {detailedShortages.slice(10).reduce((s, d) => s + (Number(d.totalCost) || 0), 0).toFixed(2)}</td>
-                                    </tr>
-                                  )}
-                                  <tr className="bg-slate-100 font-bold text-slate-900 text-xs border-t-2 border-slate-300">
-                                    <td colSpan={5} className="py-2 px-3 text-right uppercase">Total Descontado:</td>
-                                    <td className="py-2 px-3 text-center font-mono text-red-600 font-black">-{detailedShortages.reduce((sum, d) => sum + d.diff, 0)} vol</td>
-                                    <td colSpan={2} className="py-2 px-3 text-right font-mono font-black text-red-600 text-sm">R$ {finalModalValeValue.toFixed(2)}</td>
-                                  </tr>
-                                </tbody>
-                              </table>
-                            </div>
+                        {/* Demonstrativo das Faltas - SEPARADO EM P.A. E A.G. */}
+                        <div className="space-y-4">
+                          {hasPA || hasAG ? (
+                            <>
+                              {/* 1. TABELA DE PRODUTOS ACABADOS (P.A.) */}
+                              <div className="border border-blue-200 rounded-xl overflow-hidden shadow-2xs">
+                                <div className="bg-blue-50/90 px-3.5 py-2 border-b border-blue-200 flex items-center justify-between">
+                                  <span className="font-bold text-xs uppercase tracking-wider text-blue-900 flex items-center gap-1.5">
+                                    <span>📦 1. Demonstrativo de Produtos Acabados (P.A.) em Falta</span>
+                                  </span>
+                                  <span className="font-mono font-bold text-xs text-blue-900">
+                                    Subtotal P.A.: R$ {paTotalCost.toFixed(2)} (-{paTotalDiff} cx)
+                                  </span>
+                                </div>
+                                {paShortages.length > 0 ? (
+                                  <table className="w-full text-left border-collapse text-xs">
+                                    <thead className="bg-slate-50 text-slate-700 font-bold uppercase text-[10px] border-b border-slate-200">
+                                      <tr>
+                                        <th className="py-2 px-3">Cód.</th>
+                                        <th className="py-2 px-3">Descrição do Produto</th>
+                                        <th className="py-2 px-3 text-center">Faturado</th>
+                                        <th className="py-2 px-3 text-center">Conferido</th>
+                                        <th className="py-2 px-3 text-center text-amber-600">Comodato</th>
+                                        <th className="py-2 px-3 text-center text-red-600">Falta</th>
+                                        <th className="py-2 px-3 text-right">Unit.</th>
+                                        <th className="py-2 px-3 text-right">Subtotal</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100 text-slate-800">
+                                      {paShortages.map(item => (
+                                        <tr key={item.code} className="hover:bg-slate-50">
+                                          <td className="py-2 px-3 font-mono font-bold text-blue-900">{item.code}</td>
+                                          <td className="py-2 px-3 font-medium truncate max-w-[200px]">{item.name}</td>
+                                          <td className="py-2 px-3 text-center font-mono">{item.expected}</td>
+                                          <td className="py-2 px-3 text-center font-mono">{item.found}</td>
+                                          <td className="py-2 px-3 text-center font-mono font-bold text-amber-600">{item.comodato > 0 ? item.comodato : '-'}</td>
+                                          <td className="py-2 px-3 text-center font-mono text-red-600 font-bold">-{item.diff} cx</td>
+                                          <td className="py-2 px-3 text-right font-mono">R$ {item.cost.toFixed(2)}</td>
+                                          <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">R$ {item.totalCost.toFixed(2)}</td>
+                                        </tr>
+                                      ))}
+                                      <tr className="bg-blue-50/60 font-bold text-blue-950 text-xs border-t border-blue-200">
+                                        <td colSpan={5} className="py-2 px-3 text-right uppercase text-[10px]">Subtotal Faltas Produtos Acabados (P.A.):</td>
+                                        <td className="py-2 px-3 text-center font-mono text-red-600 font-black">-{paTotalDiff} cx</td>
+                                        <td colSpan={2} className="py-2 px-3 text-right font-mono font-black text-blue-900 text-sm">R$ {paTotalCost.toFixed(2)}</td>
+                                      </tr>
+                                    </tbody>
+                                  </table>
+                                ) : (
+                                  <div className="p-3 text-center text-slate-400 text-xs italic bg-white">
+                                    Nenhuma falta de Produto Acabado (P.A.) apurada neste mapa.
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* 2. TABELA DE ATIVOS DE GIRO (A.G.) / VASILHAMES */}
+                              <div className="border border-purple-200 rounded-xl overflow-hidden shadow-2xs">
+                                <div className="bg-purple-50/90 px-3.5 py-2 border-b border-purple-200 flex items-center justify-between">
+                                  <span className="font-bold text-xs uppercase tracking-wider text-purple-900 flex items-center gap-1.5">
+                                    <span>🔄 2. Demonstrativo de Ativos de Giro (A.G.) / Vasilhames em Falta</span>
+                                  </span>
+                                  <span className="font-mono font-bold text-xs text-purple-900">
+                                    Subtotal A.G.: R$ {agTotalCost.toFixed(2)} (-${agTotalDiff} un)
+                                  </span>
+                                </div>
+                                {agShortages.length > 0 ? (
+                                  <table className="w-full text-left border-collapse text-xs">
+                                    <thead className="bg-slate-50 text-slate-700 font-bold uppercase text-[10px] border-b border-slate-200">
+                                      <tr>
+                                        <th className="py-2 px-3">Cód.</th>
+                                        <th className="py-2 px-3">Descrição do Ativo / Vasilhame</th>
+                                        <th className="py-2 px-3 text-center">Faturado</th>
+                                        <th className="py-2 px-3 text-center">Conferido</th>
+                                        <th className="py-2 px-3 text-center text-amber-600">Comodato</th>
+                                        <th className="py-2 px-3 text-center text-red-600">Falta</th>
+                                        <th className="py-2 px-3 text-right">Unit.</th>
+                                        <th className="py-2 px-3 text-right">Subtotal</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100 text-slate-800">
+                                      {agShortages.map(item => (
+                                        <tr key={item.code} className="hover:bg-slate-50">
+                                          <td className="py-2 px-3 font-mono font-bold text-purple-900">{item.code}</td>
+                                          <td className="py-2 px-3 font-medium truncate max-w-[200px]">{item.name}</td>
+                                          <td className="py-2 px-3 text-center font-mono">{item.expected}</td>
+                                          <td className="py-2 px-3 text-center font-mono">{item.found}</td>
+                                          <td className="py-2 px-3 text-center font-mono font-bold text-amber-600">{item.comodato > 0 ? item.comodato : '-'}</td>
+                                          <td className="py-2 px-3 text-center font-mono text-red-600 font-bold">-{item.diff} un</td>
+                                          <td className="py-2 px-3 text-right font-mono">R$ {item.cost.toFixed(2)}</td>
+                                          <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">R$ {item.totalCost.toFixed(2)}</td>
+                                        </tr>
+                                      ))}
+                                      <tr className="bg-purple-50/60 font-bold text-purple-950 text-xs border-t border-purple-200">
+                                        <td colSpan={5} className="py-2 px-3 text-right uppercase text-[10px]">Subtotal Faltas Ativos de Giro (A.G.):</td>
+                                        <td className="py-2 px-3 text-center font-mono text-red-600 font-black">-{agTotalDiff} un</td>
+                                        <td colSpan={2} className="py-2 px-3 text-right font-mono font-black text-purple-900 text-sm">R$ {agTotalCost.toFixed(2)}</td>
+                                      </tr>
+                                    </tbody>
+                                  </table>
+                                ) : (
+                                  <div className="p-3 text-center text-slate-400 text-xs italic bg-white">
+                                    Nenhuma falta de Ativo de Giro (A.G.) apurada neste mapa.
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* QUADRO CONSOLIDADO DO MESMO VALE */}
+                              <div className="bg-slate-900 text-white p-3.5 rounded-xl flex flex-col sm:flex-row items-center justify-between gap-3 shadow-md">
+                                <div>
+                                  <span className="text-slate-400 text-[10px] font-bold uppercase tracking-wider block">
+                                    Demonstrativo Consolidado de Desconto (Art. 462 CLT):
+                                  </span>
+                                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                    <span className="bg-blue-900/60 text-blue-200 border border-blue-700/80 text-[10px] font-mono px-2 py-0.5 rounded font-bold">
+                                      📦 P.A.: R$ {paTotalCost.toFixed(2)} (-{paTotalDiff} cx)
+                                    </span>
+                                    <span className="bg-purple-900/60 text-purple-200 border border-purple-700/80 text-[10px] font-mono px-2 py-0.5 rounded font-bold">
+                                      🔄 A.G.: R$ {agTotalCost.toFixed(2)} (-{agTotalDiff} un)
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="text-right">
+                                  <span className="text-[10px] text-slate-400 uppercase font-bold block">Total Líquido Autorizado</span>
+                                  <span className="font-mono text-xl font-black text-amber-400">R$ {finalModalValeValue.toFixed(2)}</span>
+                                </div>
+                              </div>
+                            </>
                           ) : (
                             <div className="border border-slate-200 rounded-xl p-4 text-xs sm:text-sm text-slate-700 space-y-1.5 bg-slate-50 leading-relaxed">
                               <div><strong>Detalhamento dos Itens / Avarias:</strong> <span className="font-semibold text-slate-900 ml-1">{viewingVale.descricao}</span></div>

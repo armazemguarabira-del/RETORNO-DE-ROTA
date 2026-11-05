@@ -514,7 +514,7 @@ export default function App() {
 
   const cleanAudits = (list: AuditSession[]): AuditSession[] => {
     if (!list || !Array.isArray(list)) return [];
-    return list.filter(Boolean).map(a => ({
+    const cleanedList = list.filter(Boolean).map(a => ({
       ...a,
       items: Array.isArray(a.items) ? a.items : [],
       assets: Array.isArray(a.assets) ? a.assets : [],
@@ -529,6 +529,39 @@ export default function App() {
       unifiedMaps: Array.isArray(a.unifiedMaps) ? a.unifiedMaps.map(normalizeMapCode) : [],
       routeMap: normalizeMapCode(a.routeMap),
     }));
+
+    // Auto-resolve any duplicate/stale pending sessions ONLY if a finalized audit exists for the EXACT same map and exact same date
+    return cleanedList.map(a => {
+      const isPendingStatus = a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada' || a.status === 'em_aberto' || a.status === 'reconferencia';
+      if (isPendingStatus && !a.reopeningRequested) {
+        const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+        const normMap = normalizeMapCode(a.routeMap).toUpperCase();
+        if (!normMap) return a;
+
+        const hasFinishedDuplicate = cleanedList.some(other => {
+          if (other.id === a.id) return false;
+          const isFinished = (other.status === 'finalizado_ok' || other.status === 'finalizado_divergente' || (other as any).pdfDownloaded === true || (other as any).surplusFlowStatus === 'BAIXADO') && !other.reopeningRequested;
+          if (!isFinished) return false;
+
+          const normOther = normalizeMapCode(other.routeMap).toUpperCase();
+          const otherDate = other.arrivalDate || other.routeDate || other.endTime?.split('T')[0] || other.startTime?.split('T')[0];
+          
+          if (aDate && otherDate && aDate !== otherDate) return false;
+
+          const sameMap = normOther === normMap || (other.unifiedMaps && other.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normMap));
+          return sameMap;
+        });
+
+        if (hasFinishedDuplicate) {
+          return {
+            ...a,
+            status: 'finalizado_ok' as const,
+            pdfDownloaded: true
+          };
+        }
+      }
+      return a;
+    });
   };
 
   const cleanEmpilhadores = (list: Empilhador[]): Empilhador[] => {

@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { User, AuditSession, Vale } from '../types';
+import { User, AuditSession, Vale, normalizeMapCode } from '../types';
 import { 
   BarChart3, 
   Layers, 
@@ -73,7 +73,27 @@ export default function Sidebar({
 
   // Count pending items for badges
   const pendingAuditsCount = useMemo(() => {
-    return audits.filter(a => a.status === 'em_aberto' || a.status === 'conferido_fisico' || a.status === 'reconferencia').length;
+    return audits.filter(a => {
+      const isPending = a.status === 'em_aberto' || a.status === 'conferido_fisico' || a.status === 'reconferencia';
+      if (!isPending || a.reopeningRequested) return false;
+      if (a.pdfDownloaded || a.surplusFlowStatus === 'BAIXADO') return false;
+
+      const normA = normalizeMapCode(a.routeMap).toUpperCase();
+      const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+      const hasFinished = audits.some(other => {
+        if (other.id === a.id) return false;
+        const isFinished = (other.status === 'finalizado_ok' || other.status === 'finalizado_divergente' || (other as any).pdfDownloaded === true || (other as any).surplusFlowStatus === 'BAIXADO') && !other.reopeningRequested;
+        if (!isFinished) return false;
+
+        const normOther = normalizeMapCode(other.routeMap).toUpperCase();
+        const otherDate = other.arrivalDate || other.routeDate || other.endTime?.split('T')[0] || other.startTime?.split('T')[0];
+        const sameDate = !aDate || !otherDate || aDate === otherDate;
+        const sameMap = normOther === normA || (other.unifiedMaps && other.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normA));
+        return sameDate && sameMap;
+      });
+
+      return !hasFinished;
+    }).length;
   }, [audits]);
 
   const pendingValesCount = useMemo(() => {

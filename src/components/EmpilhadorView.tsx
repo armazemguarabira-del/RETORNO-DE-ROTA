@@ -328,10 +328,14 @@ export default function EmpilhadorView({
     return String(m).replace(/^0+/, '').trim();
   };
 
-  const isRouteClosedInAudits = (routeMap: string) => {
+  const isRouteClosedInAudits = (routeMap: string, routeDate?: string) => {
     const norm = normalizeMapCode(routeMap).toUpperCase();
     const upper = (routeMap || '').trim().toUpperCase();
     return audits.some(a => {
+      if (routeDate) {
+        const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+        if (aDate && aDate !== routeDate) return false;
+      }
       const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
       const aUpper = (a.routeMap || '').trim().toUpperCase();
       const isMatch = aNorm === norm || aUpper === upper ||
@@ -385,6 +389,10 @@ export default function EmpilhadorView({
       const key = `${routeMapUpper}_${plateUpper}`;
 
       const matchingAudit = audits.find(a => {
+        if (r.routeDate) {
+          const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+          if (aDate && aDate !== r.routeDate) return false;
+        }
         const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
         if (aNorm === routeMapNorm || (a.routeMap || '').toUpperCase() === routeMapUpper) return true;
         if (a.unifiedMaps) {
@@ -408,7 +416,7 @@ export default function EmpilhadorView({
       );
       const isReopeningReq = matchingAudit?.reopeningRequested === true;
       const isSubmittedToFiscal = matchingAudit && (matchingAudit.status === 'conferido_fisico' || matchingAudit.status === 'recontagem_finalizada');
-      const isClosed = (isRouteClosedInAudits(r.routeMap) || (r.status as string) === 'fechado' || (r.status as string) === 'finalizado' || isFinalizedInAudit);
+      const isClosed = (isRouteClosedInAudits(r.routeMap, r.routeDate) || (r.status as string) === 'fechado' || (r.status as string) === 'finalizado' || isFinalizedInAudit);
 
       // REGRA CRÍTICA 1: Se o mapa foi fechado fiscalmente pela Auxiliar de Logística/Fiscal e NÃO possui solicitação de reabertura, DEVE SUMIR da área de descarregamento
       if (isClosed && !isReopeningReq) {
