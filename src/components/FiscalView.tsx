@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, FiscalAlert, ImportedRoute, RouteObservation, Vale, ValeCollaborator, ReturnForecast, getAssetCode, getAssetCanonicalName, isExemptAsset, getAssetUnitCost, normalizeMapCode } from '../types';
+import { UnifiedCalendarPicker } from './UnifiedCalendarPicker';
 import { isClientFirebaseActive, saveDirectlyToFirestore } from '../clientFirebase';
 import { ClipboardCheck, ShieldAlert, ArrowRight, ShieldCheck, CheckSquare, AlertTriangle, HelpCircle, Search, RefreshCw, XCircle, DollarSign, Calendar, SlidersHorizontal, FileSpreadsheet, Clock, CheckCircle2, Shield, Trash2, Camera, BarChart3, AlertCircle, Plus, PlusCircle, FileText, Check, Award, Eye, Calculator, Folder, Copy, X, ArrowUpCircle, ArrowDownCircle, Sparkles, FolderOpen, Download, FileCheck, PackageCheck, UserPlus, FileJson, Archive, Moon, Info, Edit3, Users, Table, LayoutGrid, Filter, Layers, Printer } from 'lucide-react';
 import { ImageDB, PhotoRecord } from '../imageDb';
@@ -1355,9 +1356,17 @@ export default function FiscalView({
   // Helper to extract detailed shortages separated by P.A. and A.G. for any vale
   const getValeAuditShortages = (vale: Vale) => {
     const cleanValeMap = normalizeMapCode(vale.routeMap).toUpperCase();
+    const vDate = vale.dataGeracao ? normalizeToYYYYMMDD(vale.dataGeracao) : '';
+
     const associatedAudit = (audits || []).find(a => {
       if (vale.auditId && a.id === vale.auditId) return true;
       const aMap = normalizeMapCode(a.routeMap).toUpperCase();
+      const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+      const aDateNorm = aDate ? normalizeToYYYYMMDD(aDate) : '';
+
+      // If both have dates, they must match to avoid cross-referencing old audits from past days
+      if (vDate && aDateNorm && vDate !== aDateNorm) return false;
+
       if (cleanValeMap && aMap === cleanValeMap) return true;
       if (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === cleanValeMap)) return true;
       return false;
@@ -1378,6 +1387,34 @@ export default function FiscalView({
     }> = [];
 
     const agShortages: Array<{
+      code: string;
+      name: string;
+      expected: number;
+      found: number;
+      comodato: number;
+      recolha: number;
+      diff: number;
+      cost: number;
+      totalCost: number;
+      isAsset: true;
+      unit: string;
+    }> = [];
+
+    const paSurpluses: Array<{
+      code: string;
+      name: string;
+      expected: number;
+      found: number;
+      comodato: number;
+      recolha: number;
+      diff: number;
+      cost: number;
+      totalCost: number;
+      isAsset: false;
+      unit: string;
+    }> = [];
+
+    const agSurpluses: Array<{
       code: string;
       name: string;
       expected: number;
@@ -1414,6 +1451,22 @@ export default function FiscalView({
             isAsset: false,
             unit: 'cx'
           });
+        } else if (netDiff > 0) {
+          const diff = netDiff;
+          const unitCost = getSkuClosedPrice(i.productCode, i.cost ?? 45.0);
+          paSurpluses.push({
+            code: i.productCode,
+            name: i.productDescription || `SKU ${i.productCode}`,
+            expected: fisc,
+            found: phys,
+            comodato,
+            recolha,
+            diff,
+            cost: unitCost,
+            totalCost: diff * unitCost,
+            isAsset: false,
+            unit: 'cx'
+          });
         }
       });
 
@@ -1425,12 +1478,28 @@ export default function FiscalView({
         const comodato = a.comodatoQty ?? 0;
         const recolha = a.recolhaQty ?? 0;
         const netDiff = (phys + comodato - recolha) - fisc;
+        const assetCode = getAssetCode(a.assetId, a.assetName);
+        const assetName = a.assetName || getAssetCanonicalName(assetCode) || 'Ativo de Giro';
+        const unitCost = getAssetUnitCost(a.assetId, a.assetName, a.cost);
+
         if (netDiff < 0) {
           const diff = Math.abs(netDiff);
-          const unitCost = getAssetUnitCost(a.assetId, a.assetName, a.cost);
-          const assetCode = getAssetCode(a.assetId, a.assetName);
-          const assetName = a.assetName || getAssetCanonicalName(assetCode) || 'Ativo de Giro';
           agShortages.push({
+            code: assetCode,
+            name: assetName,
+            expected: fisc,
+            found: phys,
+            comodato,
+            recolha,
+            diff,
+            cost: unitCost,
+            totalCost: diff * unitCost,
+            isAsset: true,
+            unit: 'un'
+          });
+        } else if (netDiff > 0) {
+          const diff = netDiff;
+          agSurpluses.push({
             code: assetCode,
             name: assetName,
             expected: fisc,
@@ -1454,18 +1523,30 @@ export default function FiscalView({
     const grandTotalCost = paTotalCost + agTotalCost;
     const grandTotalDiff = paTotalDiff + agTotalDiff;
 
+    const paSurplusCost = paSurpluses.reduce((sum, d) => sum + d.totalCost, 0);
+    const agSurplusCost = agSurpluses.reduce((sum, d) => sum + d.totalCost, 0);
+    const paSurplusDiff = paSurpluses.reduce((sum, d) => sum + d.diff, 0);
+    const agSurplusDiff = agSurpluses.reduce((sum, d) => sum + d.diff, 0);
+
     return {
       associatedAudit,
       paShortages,
       agShortages,
+      paSurpluses,
+      agSurpluses,
       paTotalCost,
       agTotalCost,
       paTotalDiff,
       agTotalDiff,
+      paSurplusCost,
+      agSurplusCost,
+      paSurplusDiff,
+      agSurplusDiff,
       grandTotalCost,
       grandTotalDiff,
       hasPA: paShortages.length > 0,
-      hasAG: agShortages.length > 0
+      hasAG: agShortages.length > 0,
+      hasSobras: paSurpluses.length > 0 || agSurpluses.length > 0
     };
   };
 
@@ -2065,41 +2146,282 @@ export default function FiscalView({
   };
 
   const handlePrintVale = (valeToPrint: Vale) => {
-    let iframe = document.getElementById('vale-print-iframe') as HTMLIFrameElement;
-    if (!iframe) {
-      iframe = document.createElement('iframe');
-      iframe.id = 'vale-print-iframe';
-      iframe.style.position = 'fixed';
-      iframe.style.right = '0';
-      iframe.style.bottom = '0';
-      iframe.style.width = '0';
-      iframe.style.height = '0';
-      iframe.style.border = '0';
-      iframe.style.opacity = '0';
-      iframe.style.pointerEvents = 'none';
-      document.body.appendChild(iframe);
+    const rawShortages = getValeAuditShortages(valeToPrint);
+    const shortages = {
+      associatedAudit: rawShortages?.associatedAudit,
+      paShortages: rawShortages?.paShortages || [],
+      agShortages: rawShortages?.agShortages || [],
+      paTotalCost: rawShortages?.paTotalCost || 0,
+      agTotalCost: rawShortages?.agTotalCost || 0,
+      paTotalDiff: rawShortages?.paTotalDiff || 0,
+      agTotalDiff: rawShortages?.agTotalDiff || 0,
+      hasPA: (rawShortages?.paShortages || []).length > 0,
+      hasAG: (rawShortages?.agShortages || []).length > 0
+    };
+
+    const finalValeValue = Number(valeToPrint.valor) || 0;
+    const additionalColabs = valeToPrint.colaboradoresAdicionais || [];
+    const totalTeamCount = 1 + additionalColabs.length;
+
+    const equalShare = totalTeamCount > 0 ? finalValeValue / totalTeamCount : finalValeValue;
+    const printCalculatedShares: number[] = (valeToPrint as any).shares && (valeToPrint as any).shares.length === totalTeamCount
+      ? (valeToPrint as any).shares
+      : new Array(totalTeamCount).fill(equalShare);
+
+    const principalPrintShare = valeToPrint.colaboradorValor !== undefined && valeToPrint.colaboradorValor > 0 
+      ? valeToPrint.colaboradorValor 
+      : (printCalculatedShares[0] ?? finalValeValue);
+
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    let currentY = 15;
+
+    // Header
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(14);
+    doc.setTextColor(15, 23, 42);
+    doc.text("PAU BRASIL DISTRIBUIDORA LTDA", 14, currentY);
+
+    doc.setFont("Helvetica", "normal");
+    doc.setFontSize(8.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text("Sistema de Controle Operacional e Retorno de Rota • Guarabira/PB", 14, currentY + 4.5);
+
+    doc.setFont("Courier", "bold");
+    doc.setFontSize(12);
+    doc.setTextColor(220, 38, 38);
+    doc.text(`VALE Nº #${valeToPrint.id}`, 196, currentY, { align: 'right' });
+    doc.setFont("Helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Emissão: ${valeToPrint.dataGeracao ? formatDateBR(valeToPrint.dataGeracao) : ''}`, 196, currentY + 4.5, { align: 'right' });
+
+    doc.setDrawColor(15, 23, 42);
+    doc.setLineWidth(0.6);
+    doc.line(14, currentY + 7, 196, currentY + 7);
+
+    currentY += 13;
+
+    // Title Banner
+    doc.setFillColor(248, 250, 252);
+    doc.rect(14, currentY, 182, 8, 'F');
+    doc.setDrawColor(203, 213, 225);
+    doc.rect(14, currentY, 182, 8, 'S');
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(9.5);
+    doc.setTextColor(15, 23, 42);
+    doc.text("TERMO DE AUTORIZAÇÃO DE DESCONTO EM FOLHA E AFERIÇÃO DE FALTAS", 105, currentY + 5.5, { align: 'center' });
+
+    currentY += 12;
+
+    // Route Info Box
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(8.5);
+    doc.setTextColor(30, 41, 59);
+    doc.text(`Mapa de Carga: ${valeToPrint.routeMap !== 'AVULSO' ? `Mapa ${valeToPrint.routeMap}` : 'AVULSO'}`, 14, currentY);
+    if (shortages.associatedAudit?.plate) {
+      doc.text(`Placa do Veículo: ${shortages.associatedAudit.plate}`, 105, currentY);
+    }
+    doc.text(`Status: ${valeToPrint.status}`, 196, currentY, { align: 'right' });
+
+    currentY += 6;
+
+    // Responsibility Rateio Table Header
+    doc.setFillColor(241, 245, 249);
+    doc.rect(14, currentY, 182, 6, 'F');
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(7.5);
+    doc.setTextColor(51, 65, 85);
+    doc.text("COLABORADOR RESPONSÁVEL", 16, currentY + 4.2);
+    doc.text("CARGO / FUNÇÃO", 110, currentY + 4.2);
+    doc.text("VALOR RATEADO", 194, currentY + 4.2, { align: 'right' });
+    currentY += 6;
+
+    // Principal
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(8.5);
+    doc.setTextColor(15, 23, 42);
+    doc.text(valeToPrint.colaboradorName || 'Colaborador', 16, currentY + 4);
+    doc.setFont("Helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(71, 85, 105);
+    doc.text(`${valeToPrint.colaboradorRole || ''} (Principal)`, 110, currentY + 4);
+    doc.setFont("Courier", "bold");
+    doc.setTextColor(220, 38, 38);
+    doc.text(`R$ ${principalPrintShare.toFixed(2)}`, 194, currentY + 4, { align: 'right' });
+    currentY += 6;
+
+    additionalColabs.forEach((c, i) => {
+      const helperShare = c.valor !== undefined && c.valor > 0 ? c.valor : (printCalculatedShares[i + 1] ?? 0);
+      doc.setFont("Helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(30, 41, 59);
+      doc.text(`+ ${c.name || 'Ajudante'}`, 16, currentY + 4);
+      doc.text(`${c.role || 'Ajudante'} (${i + 1}º Ajudante)`, 110, currentY + 4);
+      doc.setFont("Courier", "bold");
+      doc.setTextColor(220, 38, 38);
+      doc.text(`R$ ${helperShare.toFixed(2)}`, 194, currentY + 4, { align: 'right' });
+      currentY += 6;
+    });
+
+    currentY += 4;
+
+    // PA Shortages Table if present
+    if (shortages.paShortages.length > 0) {
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(8.5);
+      doc.setTextColor(30, 64, 175);
+      doc.text(`📦 FALTAS DE PRODUTOS ACABADOS (P.A.) - Subtotal: R$ ${shortages.paTotalCost.toFixed(2)} (-${shortages.paTotalDiff} cx)`, 14, currentY);
+      currentY += 4.5;
+
+      shortages.paShortages.forEach(p => {
+        doc.setFont("Helvetica", "normal");
+        doc.setFontSize(8);
+        doc.setTextColor(15, 23, 42);
+        doc.text(`• ${p.diff || 0} cx - ${p.name || ''}`, 16, currentY);
+        doc.setFont("Courier", "normal");
+        doc.text(`R$ ${(p.totalCost || 0).toFixed(2)}`, 194, currentY, { align: 'right' });
+        currentY += 4.2;
+      });
+      currentY += 2;
     }
 
-    const doc = iframe.contentDocument || iframe.contentWindow?.document;
-    if (!doc) {
-      window.print();
-      return;
+    // AG Shortages Table if present
+    if (shortages.agShortages.length > 0) {
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(8.5);
+      doc.setTextColor(107, 33, 168);
+      doc.text(`🔄 FALTAS DE ATIVOS DE GIRO (A.G.) - Subtotal: R$ ${shortages.agTotalCost.toFixed(2)} (-${shortages.agTotalDiff} un)`, 14, currentY);
+      currentY += 4.5;
+
+      shortages.agShortages.forEach(a => {
+        doc.setFont("Helvetica", "normal");
+        doc.setFontSize(8);
+        doc.setTextColor(15, 23, 42);
+        doc.text(`• ${a.diff || 0} un - [${a.code || ''}] ${a.name || ''}`, 16, currentY);
+        doc.setFont("Courier", "normal");
+        doc.text(`R$ ${(a.totalCost || 0).toFixed(2)}`, 194, currentY, { align: 'right' });
+        currentY += 4.2;
+      });
+      currentY += 2;
     }
 
-    const html = generatePrintableValeDocument(valeToPrint);
-    doc.open();
-    doc.write(html);
-    doc.close();
+    if (!shortages.hasPA && !shortages.hasAG && valeToPrint.descricao) {
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(8.5);
+      doc.setTextColor(15, 23, 42);
+      doc.text(`Descrição da Falta: ${valeToPrint.descricao}`, 14, currentY);
+      currentY += 6;
+    }
 
-    setTimeout(() => {
-      iframe.contentWindow?.focus();
-      iframe.contentWindow?.print();
-    }, 250);
+    if (valeToPrint.observacao) {
+      doc.setFont("Helvetica", "italic");
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139);
+      doc.text(`Observações: ${valeToPrint.observacao}`, 14, currentY);
+      currentY += 6;
+    }
+
+    // Grand Total Bar
+    doc.setFillColor(254, 242, 242);
+    doc.rect(14, currentY, 182, 9, 'F');
+    doc.setDrawColor(248, 113, 113);
+    doc.rect(14, currentY, 182, 9, 'S');
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(9);
+    doc.setTextColor(185, 28, 28);
+    doc.text("VALOR TOTAL AUTORIZADO DO VALE:", 18, currentY + 5.8);
+    doc.setFont("Courier", "bold");
+    doc.setFontSize(11);
+    doc.text(`R$ ${finalValeValue.toFixed(2)}`, 192, currentY + 5.8, { align: 'right' });
+
+    currentY += 15;
+
+    // Legal Statement
+    doc.setFont("Helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    const legalText = "O presente termo decorre de procedimento de aferição física no retorno de rota e expressa a concordância do colaborador com a reposição do prejuízo constatado, em estrita conformidade com o Artigo 462, § 1º da CLT e com as normas regulamentares internas de guarda e responsabilidade patrimonial da Pau Brasil Distribuidora Ltda.";
+    const splitLegal = doc.splitTextToSize(legalText, 182);
+    doc.text(splitLegal, 14, currentY);
+
+    currentY += splitLegal.length * 3.5 + 15;
+
+    // Signatures
+    const s1X = 20;
+    const s2X = 115;
+    
+    // Principal signature
+    doc.setDrawColor(71, 85, 105);
+    doc.line(s1X, currentY, s1X + 70, currentY);
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(15, 23, 42);
+    doc.text(valeToPrint.colaboradorName || 'Colaborador', s1X + 35, currentY + 4, { align: 'center' });
+    doc.setFont("Helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`${valeToPrint.colaboradorRole || ''} (Principal) - R$ ${principalPrintShare.toFixed(2)}`, s1X + 35, currentY + 7.5, { align: 'center' });
+
+    // Additional signatures or Fiscal
+    if (additionalColabs.length > 0) {
+      const firstHelp = additionalColabs[0];
+      const hShare = firstHelp.valor !== undefined && firstHelp.valor > 0 ? firstHelp.valor : (printCalculatedShares[1] ?? 0);
+      doc.line(s2X, currentY, s2X + 70, currentY);
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(8);
+      doc.setTextColor(15, 23, 42);
+      doc.text(firstHelp.name || 'Ajudante', s2X + 35, currentY + 4, { align: 'center' });
+      doc.setFont("Helvetica", "normal");
+      doc.setFontSize(7);
+      doc.setTextColor(100, 116, 139);
+      doc.text(`${firstHelp.role || ''} (Ajudante) - R$ ${hShare.toFixed(2)}`, s2X + 35, currentY + 7.5, { align: 'center' });
+
+      currentY += 18;
+
+      doc.line(s1X, currentY, s1X + 70, currentY);
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(8);
+      doc.setTextColor(15, 23, 42);
+      doc.text(currentUser.name || 'Fiscal', s1X + 35, currentY + 4, { align: 'center' });
+      doc.setFont("Helvetica", "normal");
+      doc.setFontSize(7);
+      doc.setTextColor(100, 116, 139);
+      doc.text("Fiscal de Logística (Emissor)", s1X + 35, currentY + 7.5, { align: 'center' });
+
+      doc.line(s2X, currentY, s2X + 70, currentY);
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(8);
+      doc.setTextColor(15, 23, 42);
+      doc.text("Elisson Minervino", s2X + 35, currentY + 4, { align: 'center' });
+      doc.setFont("Helvetica", "normal");
+      doc.setFontSize(7);
+      doc.setTextColor(100, 116, 139);
+      doc.text("Gestão de Logística (Autorização)", s2X + 35, currentY + 7.5, { align: 'center' });
+    } else {
+      doc.line(s2X, currentY, s2X + 70, currentY);
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(8);
+      doc.setTextColor(15, 23, 42);
+      doc.text(currentUser.name || 'Fiscal', s2X + 35, currentY + 4, { align: 'center' });
+      doc.setFont("Helvetica", "normal");
+      doc.setFontSize(7);
+      doc.setTextColor(100, 116, 139);
+      doc.text("Fiscal de Logística (Emissor)", s2X + 35, currentY + 7.5, { align: 'center' });
+    }
+
+    doc.save(`vale_desconto_${valeToPrint.id}_${(valeToPrint.colaboradorName || 'vale').replace(/\s+/g, '_')}.pdf`);
   };
 
   // Memoized filtered vales based on text search, category, and date filtering (specific day or range)
   const filteredVales = React.useMemo(() => {
     return vales.filter(v => {
+      // 0. Exclude dummy seed or corrupted entries (removes circled unneeded rows)
+      if (!v || !v.id) return false;
+      if (v.id === 'vale_seed' || v.id.includes('seed')) return false;
+      if (!v.routeMap || v.routeMap === 'undefined' || v.routeMap === 'null') return false;
+      const numVal = Number(v.valor) || 0;
+      if (numVal <= 0 && (!v.routeMap || v.routeMap === '')) return false;
+
       // 1. Text search
       if (valeSearchTerm.trim()) {
         const q = valeSearchTerm.trim().toLowerCase();
@@ -2132,11 +2454,22 @@ export default function FiscalView({
     });
   }, [vales, valeSearchTerm, valeFilterCategory, valesFilterDate, valesFilterStartDate, valesFilterEndDate]);
 
-  // Generate and print official consolidated PDF report of all registered vales with separate PA and AG shortages
-  const exportValesSummaryPDF = (customValesList?: Vale[]) => {
-    const list = customValesList || filteredVales;
-    if (!list || list.length === 0) {
-      alert('Nenhum vale emitido disponível para o período/filtro selecionado.');
+  // Generate and export official PDF report of vales with PA/AG segregation, shortened IDs, vehicle shortage metrics, and zero-overlap layout
+  const exportValesSummaryPDF = (customValesList?: Vale[], reportScope: 'TODOS' | 'PA' | 'AG' = 'TODOS') => {
+    const rawList = customValesList || filteredVales;
+    
+    // 1. Strict sanitation: filter out any seed/dummy or undefined map rows (User circled item)
+    const validRawList = (rawList || []).filter(v => {
+      if (!v || !v.id) return false;
+      if (v.id === 'vale_seed' || v.id.includes('seed')) return false;
+      if (!v.routeMap || v.routeMap === 'undefined' || v.routeMap === 'null') return false;
+      const numVal = Number(v.valor) || 0;
+      if (numVal <= 0 && (!v.routeMap || v.routeMap === '')) return false;
+      return true;
+    });
+
+    if (validRawList.length === 0) {
+      alert('Nenhum vale emitido válido encontrado para o período/filtro selecionado.');
       return;
     }
 
@@ -2151,26 +2484,101 @@ export default function FiscalView({
       periodoLabel = `Até: ${formatDateBR(valesFilterEndDate)}`;
     }
 
-    let iframe = document.getElementById('vales-summary-print-iframe') as HTMLIFrameElement;
-    if (!iframe) {
-      iframe = document.createElement('iframe');
-      iframe.id = 'vales-summary-print-iframe';
-      iframe.style.position = 'fixed';
-      iframe.style.right = '0';
-      iframe.style.bottom = '0';
-      iframe.style.width = '0';
-      iframe.style.height = '0';
-      iframe.style.border = '0';
-      iframe.style.opacity = '0';
-      iframe.style.pointerEvents = 'none';
-      document.body.appendChild(iframe);
+    // 2. Deduplicate repeated vales for the same map and date
+    const uniqueValesMap = new Map<string, typeof validRawList[0]>();
+    validRawList.forEach(v => {
+      const cleanMap = v.routeMap ? normalizeMapCode(v.routeMap).toUpperCase() : '';
+      const vDate = v.dataGeracao || '';
+      const key = (cleanMap && cleanMap !== 'AVULSO' && vDate) ? `${cleanMap}_${vDate}` : v.id;
+      const existing = uniqueValesMap.get(key);
+      if (!existing || (Number(v.valor) || 0) > (Number(existing.valor) || 0)) {
+        uniqueValesMap.set(key, v);
+      }
+    });
+
+    const uniqueList = Array.from(uniqueValesMap.values());
+
+    // 3. Enrich with audit shortages and driver name reconciliation
+    let enrichedVales = uniqueList.map(v => {
+      const shortages = getValeAuditShortages(v);
+      const paShortages = shortages?.paShortages || [];
+      const agShortages = shortages?.agShortages || [];
+      const paSurpluses = shortages?.paSurpluses || [];
+      const agSurpluses = shortages?.agSurpluses || [];
+      const paTotalCost = shortages?.paTotalCost || 0;
+      const agTotalCost = shortages?.agTotalCost || 0;
+      const paTotalDiff = shortages?.paTotalDiff || 0;
+      const agTotalDiff = shortages?.agTotalDiff || 0;
+      const paSurplusCost = shortages?.paSurplusCost || 0;
+      const agSurplusCost = shortages?.agSurplusCost || 0;
+      const paSurplusDiff = shortages?.paSurplusDiff || 0;
+      const agSurplusDiff = shortages?.agSurplusDiff || 0;
+
+      // Reconcile driver name if numeric
+      let resolvedDriverName = v.colaboradorName || '';
+      if (!resolvedDriverName || /^\d+$/.test(resolvedDriverName.trim())) {
+        const foundDriver = drivers.find(d => d.id === v.colaboradorId || d.id === resolvedDriverName.trim());
+        if (foundDriver && foundDriver.name) {
+          resolvedDriverName = foundDriver.name;
+        } else {
+          const cleanMap = v.routeMap ? normalizeMapCode(v.routeMap).toUpperCase() : '';
+          const foundRoute = (importedRoutes || []).find(r => cleanMap && normalizeMapCode(r.routeMap).toUpperCase() === cleanMap);
+          if (foundRoute && foundRoute.driverName && !/^\d+$/.test(foundRoute.driverName.trim())) {
+            resolvedDriverName = foundRoute.driverName;
+          }
+        }
+      }
+
+      return {
+        vale: {
+          ...v,
+          colaboradorName: resolvedDriverName || v.colaboradorName || 'Motorista'
+        },
+        shortages: {
+          associatedAudit: shortages?.associatedAudit,
+          paShortages,
+          agShortages,
+          paSurpluses,
+          agSurpluses,
+          paTotalCost,
+          agTotalCost,
+          paTotalDiff,
+          agTotalDiff,
+          paSurplusCost,
+          agSurplusCost,
+          paSurplusDiff,
+          agSurplusDiff,
+          hasPA: paShortages.length > 0 || paTotalCost > 0 || paTotalDiff > 0,
+          hasAG: agShortages.length > 0 || agTotalCost > 0 || agTotalDiff > 0,
+          hasSobras: paSurpluses.length > 0 || agSurpluses.length > 0
+        }
+      };
+    });
+
+    // 4. Segregate by Scope (PA only or AG only) if requested
+    if (reportScope === 'PA') {
+      enrichedVales = enrichedVales.filter(item => item.shortages.hasPA || item.shortages.paTotalDiff > 0 || item.shortages.paTotalCost > 0);
+      if (enrichedVales.length === 0) {
+        alert('Nenhum vale emitido com falta de Produtos Acabados (P.A.) no período selecionado.');
+        return;
+      }
+    } else if (reportScope === 'AG') {
+      enrichedVales = enrichedVales.filter(item => item.shortages.hasAG || item.shortages.agTotalDiff > 0 || item.shortages.agTotalCost > 0);
+      if (enrichedVales.length === 0) {
+        alert('Nenhum vale emitido com falta de Ativos de Giro (A.G.) no período selecionado.');
+        return;
+      }
     }
 
-    const doc = iframe.contentDocument || iframe.contentWindow?.document;
-    if (!doc) {
-      window.print();
-      return;
-    }
+    // Sort by Date descending, then by Map
+    enrichedVales.sort((a, b) => {
+      const dateA = a.vale.dataGeracao || '';
+      const dateB = b.vale.dataGeracao || '';
+      if (dateA !== dateB) return dateB.localeCompare(dateA);
+      const mapA = a.vale.routeMap || '';
+      const mapB = b.vale.routeMap || '';
+      return mapA.localeCompare(mapB);
+    });
 
     // Calculate aggregated metrics
     let totalGeralDescontos = 0;
@@ -2178,334 +2586,592 @@ export default function FiscalView({
     let totalGeralAG = 0;
     let totalQtdPA = 0;
     let totalQtdAG = 0;
+    let totalSobrasPA = 0;
+    let totalSobrasAG = 0;
+    let totalSobrasCost = 0;
     let pendentesCount = 0;
     let assinadosCount = 0;
     let compensadosCount = 0;
 
-    const enrichedVales = list.map(v => {
-      const shortages = getValeAuditShortages(v);
-      const valNum = Number(v.valor) || 0;
+    enrichedVales.forEach(item => {
+      const valNum = Number(item.vale.valor) || 0;
       totalGeralDescontos += valNum;
-      totalGeralPA += shortages.paTotalCost;
-      totalGeralAG += shortages.agTotalCost;
-      totalQtdPA += shortages.paTotalDiff;
-      totalQtdAG += shortages.agTotalDiff;
+      totalGeralPA += item.shortages.paTotalCost;
+      totalGeralAG += item.shortages.agTotalCost;
+      totalQtdPA += item.shortages.paTotalDiff;
+      totalQtdAG += item.shortages.agTotalDiff;
+      totalSobrasPA += item.shortages.paSurplusDiff;
+      totalSobrasAG += item.shortages.agSurplusDiff;
+      totalSobrasCost += (item.shortages.paSurplusCost + item.shortages.agSurplusCost);
 
-      if (v.status === 'PENDENTE_ASSINATURA') pendentesCount++;
-      else if (v.status === 'ASSINADO') assinadosCount++;
-      else if (v.status === 'COMPENSADO') compensadosCount++;
-
-      return {
-        vale: v,
-        shortages
-      };
+      if (item.vale.status === 'PENDENTE_ASSINATURA') pendentesCount++;
+      else if (item.vale.status === 'ASSINADO') assinadosCount++;
+      else if (item.vale.status === 'COMPENSADO') compensadosCount++;
     });
 
-    const nowFormatted = new Date().toLocaleString('pt-BR');
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    let currentY = 12;
+    let pageNum = 1;
 
-    const rowsHtml = enrichedVales.map(({ vale: v, shortages }) => {
-      const additional = v.colaboradoresAdicionais || [];
-      const colabDetails = `
-        <div style="font-weight: 700; color: #0f172a;">${v.colaboradorName}</div>
-        <div style="font-size: 8.5px; color: #64748b; font-family: monospace;">${v.colaboradorRole}${v.colaboradorValor ? ` (R$ ${v.colaboradorValor.toFixed(2)})` : ''}</div>
-        ${additional.map(c => `
-          <div style="font-size: 8.5px; color: #475569; margin-top: 1px;">
-            + ${c.name} <span style="font-family: monospace; color: #b45309;">(R$ ${(c.valor ?? 0).toFixed(2)})</span>
-          </div>
-        `).join('')}
-      `;
+    const reportTitle = reportScope === 'PA'
+      ? `RELATÓRIO DE CONFERÊNCIA POR MAPA • FALTAS & SOBRAS DE PRODUTOS ACABADOS (P.A.)`
+      : reportScope === 'AG'
+      ? `RELATÓRIO DE CONFERÊNCIA POR MAPA • FALTAS & SOBRAS DE ATIVOS DE GIRO (A.G.)`
+      : `RELATÓRIO ANALÍTICO POR MAPA • CONFERÊNCIA DE FALTAS & SOBRAS (P.A. & A.G.)`;
 
-      const paDetails = shortages.paShortages.length > 0 ? `
-        <div style="font-size: 8.5px; color: #1e3a8a; line-height: 1.25;">
-          ${shortages.paShortages.slice(0, 3).map(p => `
-            <div>• <strong>${p.diff}cx</strong> ${p.name} <span style="font-family: monospace; color: #64748b;">(R$ ${p.totalCost.toFixed(2)})</span></div>
-          `).join('')}
-          ${shortages.paShortages.length > 3 ? `<div style="color: #64748b; font-style: italic;">+ ${shortages.paShortages.length - 3} outros itens P.A.</div>` : ''}
-          <div style="margin-top: 2px; font-weight: 800; font-family: monospace; color: #1e40af; border-top: 1px dashed #bfdbfe; padding-top: 1px;">
-            Subtotal P.A.: R$ ${shortages.paTotalCost.toFixed(2)} (-${shortages.paTotalDiff} cx)
-          </div>
-        </div>
-      ` : `
-        <span style="font-size: 8.5px; color: #94a3b8; font-style: italic;">Sem falta P.A.</span>
-      `;
+    const drawHeader = (pageNumber: number) => {
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(13);
+      doc.setTextColor(15, 23, 42);
+      doc.text("PAU BRASIL DISTRIBUIDORA LTDA", 10, currentY);
 
-      const agDetails = shortages.agShortages.length > 0 ? `
-        <div style="font-size: 8.5px; color: #6b21a8; line-height: 1.25;">
-          ${shortages.agShortages.slice(0, 3).map(a => `
-            <div>• <strong>${a.diff}x</strong> [${a.code}] ${a.name} <span style="font-family: monospace; color: #64748b;">(R$ ${a.totalCost.toFixed(2)})</span></div>
-          `).join('')}
-          ${shortages.agShortages.length > 3 ? `<div style="color: #64748b; font-style: italic;">+ ${shortages.agShortages.length - 3} outros ativos A.G.</div>` : ''}
-          <div style="margin-top: 2px; font-weight: 800; font-family: monospace; color: #6b21a8; border-top: 1px dashed #e9d5ff; padding-top: 1px;">
-            Subtotal A.G.: R$ ${shortages.agTotalCost.toFixed(2)} (-${shortages.agTotalDiff} un)
-          </div>
-        </div>
-      ` : `
-        <span style="font-size: 8.5px; color: #94a3b8; font-style: italic;">Sem falta A.G.</span>
-      `;
+      doc.setFont("Helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139);
+      doc.text("Gestão Logística de Retorno • Unidade Guarabira/PB • CD 04", 10, currentY + 4);
 
-      const statusBadge = v.status === 'COMPENSADO'
-        ? `<span style="background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; padding: 2px 5px; border-radius: 3px; font-weight: 800; font-size: 8px;">COMPENSADO</span>`
-        : v.status === 'ASSINADO'
-          ? `<span style="background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; padding: 2px 5px; border-radius: 3px; font-weight: 800; font-size: 8px;">ASSINADO</span>`
-          : `<span style="background: #fffbeb; color: #92400e; border: 1px solid #fde68a; padding: 2px 5px; border-radius: 3px; font-weight: 800; font-size: 8px;">PENDENTE</span>`;
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(8.5);
+      if (reportScope === 'PA') doc.setTextColor(30, 64, 175);
+      else if (reportScope === 'AG') doc.setTextColor(107, 33, 168);
+      else doc.setTextColor(180, 83, 9);
+      doc.text(`${reportTitle} • ${periodoLabel.toUpperCase()}`, 10, currentY + 9);
 
-      return `
-        <tr style="border-bottom: 1px solid #e2e8f0; font-size: 9px;">
-          <td style="padding: 5px 6px; font-family: monospace; font-weight: bold; color: #0f172a; white-space: nowrap;">
-            #${v.id}
-            <div style="font-size: 8px; color: #64748b; font-weight: normal;">${new Date(v.dataGeracao + 'T00:00:00').toLocaleDateString('pt-BR')}</div>
-          </td>
-          <td style="padding: 5px 6px; font-family: monospace; font-weight: bold; color: #1e293b; white-space: nowrap;">
-            ${v.routeMap !== 'AVULSO' ? `Mapa ${v.routeMap}` : 'AVULSO'}
-            ${shortages.associatedAudit?.plate ? `<div style="font-size: 8px; color: #64748b;">Placa: ${shortages.associatedAudit.plate}</div>` : ''}
-          </td>
-          <td style="padding: 5px 6px; max-width: 170px;">${colabDetails}</td>
-          <td style="padding: 5px 6px; max-width: 210px; background: #fafcff;">${paDetails}</td>
-          <td style="padding: 5px 6px; max-width: 210px; background: #fdfcff;">${agDetails}</td>
-          <td style="padding: 5px 6px; text-align: right; font-family: monospace; font-weight: 900; font-size: 10.5px; color: #dc2626; white-space: nowrap;">
-            R$ ${(Number(v.valor) || 0).toFixed(2)}
-          </td>
-          <td style="padding: 5px 6px; text-align: center; white-space: nowrap;">${statusBadge}</td>
-        </tr>
-      `;
-    }).join('');
+      // Right header box
+      doc.setFont("Helvetica", "normal");
+      doc.setFontSize(7.5);
+      doc.setTextColor(71, 85, 105);
+      const nowFormatted = new Date().toLocaleString('pt-BR');
+      doc.text(`Emissão: ${nowFormatted} | Pág. ${pageNumber}`, 287, currentY, { align: 'right' });
+      doc.text(`Operador: ${currentUser.name || 'Fiscal'}`, 287, currentY + 4, { align: 'right' });
 
-    const html = `
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8" />
-  <title>Relatório Geral de Vales e Descontos (P.A. e A.G.)</title>
-  <style>
-    @page {
-      size: A4 landscape;
-      margin: 8mm 10mm;
-    }
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-      -webkit-print-color-adjust: exact !important;
-      print-color-adjust: exact !important;
-    }
-    html, body {
-      width: 100%;
-      background: #ffffff;
-      color: #0f172a;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      font-size: 9.5px;
-      line-height: 1.35;
-    }
-    .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      border-bottom: 2.5px solid #0f172a;
-      padding-bottom: 8px;
-      margin-bottom: 10px;
-    }
-    .company-title {
-      font-size: 18px;
-      font-weight: 900;
-      text-transform: uppercase;
-      letter-spacing: -0.01em;
-      color: #0f172a;
-    }
-    .company-sub {
-      font-size: 10px;
-      color: #475569;
-      font-family: monospace;
-      text-transform: uppercase;
-      margin-top: 1px;
-    }
-    .report-badge {
-      background: #f1f5f9;
-      border: 1.5px solid #cbd5e1;
-      border-radius: 5px;
-      padding: 5px 12px;
-      text-align: right;
-    }
-    .kpi-container {
-      display: grid;
-      grid-template-columns: repeat(5, 1fr);
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-    .kpi-card {
-      background: #f8fafc;
-      border: 1px solid #cbd5e1;
-      border-radius: 5px;
-      padding: 6px 10px;
-    }
-    .kpi-label {
-      font-size: 8.5px;
-      font-weight: 700;
-      text-transform: uppercase;
-      color: #64748b;
-      letter-spacing: 0.03em;
-    }
-    .kpi-value {
-      font-size: 13.5px;
-      font-weight: 900;
-      font-family: monospace;
-      color: #0f172a;
-      margin-top: 2px;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-bottom: 12px;
-    }
-    th {
-      background: #f1f5f9;
-      color: #334155;
-      font-weight: 800;
-      text-transform: uppercase;
-      font-size: 8.5px;
-      letter-spacing: 0.03em;
-      padding: 6px 6px;
-      border-top: 1px solid #cbd5e1;
-      border-bottom: 2px solid #94a3b8;
-    }
-    .signatures-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 20px;
-      margin-top: 25px;
-      text-align: center;
-      page-break-inside: avoid;
-    }
-    .sig-line {
-      border-top: 1.5px solid #475569;
-      padding-top: 4px;
-      margin-top: 24px;
-    }
-    .sig-name {
-      font-weight: 800;
-      font-size: 10px;
-      color: #0f172a;
-      display: block;
-    }
-    .sig-role {
-      font-size: 8.5px;
-      color: #64748b;
-      text-transform: uppercase;
-      font-family: monospace;
-      font-weight: 600;
-      display: block;
-    }
-  </style>
-</head>
-<body>
-  <div>
-    <!-- Header -->
-    <div class="header">
-      <div>
-        <div class="company-title">PAU BRASIL DISTRIBUIDORA LTDA</div>
-        <div class="company-sub">Gestão Logística de Retorno • Unidade Guarabira/PB • CD 04</div>
-        <div style="font-size: 11px; font-weight: 900; color: #b45309; text-transform: uppercase; margin-top: 3px;">
-          RELATÓRIO OFICIAL ANALÍTICO DE VALES E DESCONTOS EM FOLHA (P.A. & A.G.) • ${periodoLabel}
-        </div>
-      </div>
-      <div class="report-badge">
-        <div style="font-size: 8.5px; font-weight: bold; color: #64748b; text-transform: uppercase;">Emissão Oficial</div>
-        <div style="font-size: 11px; font-family: monospace; font-weight: 900; color: #0f172a;">${nowFormatted}</div>
-        <div style="font-size: 8.5px; color: #64748b; margin-top: 1px;">Operador: <strong>${currentUser.name}</strong></div>
-        <div style="font-size: 8.5px; color: #92400e; font-weight: 800; margin-top: 2px; background: #fef3c7; border: 1px solid #fde68a; padding: 2px 6px; border-radius: 3px; display: inline-block;">
-          ${periodoLabel}
-        </div>
-      </div>
-    </div>
+      doc.setDrawColor(15, 23, 42);
+      doc.setLineWidth(0.6);
+      doc.line(10, currentY + 11, 287, currentY + 11);
 
-    <!-- KPIs -->
-    <div class="kpi-container">
-      <div class="kpi-card">
-        <div class="kpi-label">Vales Emitidos</div>
-        <div class="kpi-value">${list.length} registros</div>
-      </div>
-      <div class="kpi-card" style="border-left: 3px solid #dc2626;">
-        <div class="kpi-label">Total em Vales (R$)</div>
-        <div class="kpi-value" style="color: #dc2626;">R$ ${totalGeralDescontos.toFixed(2)}</div>
-      </div>
-      <div class="kpi-card" style="border-left: 3px solid #2563eb;">
-        <div class="kpi-label">Faltas Prod. Acabados (P.A.)</div>
-        <div class="kpi-value" style="color: #1e40af;">R$ ${totalGeralPA.toFixed(2)} <span style="font-size: 9.5px; font-weight: normal; color: #64748b;">(-${totalQtdPA} cx)</span></div>
-      </div>
-      <div class="kpi-card" style="border-left: 3px solid #7c3aed;">
-        <div class="kpi-label">Faltas Ativos Giro (A.G.)</div>
-        <div class="kpi-value" style="color: #6b21a8;">R$ ${totalGeralAG.toFixed(2)} <span style="font-size: 9.5px; font-weight: normal; color: #64748b;">(-${totalQtdAG} un)</span></div>
-      </div>
-      <div class="kpi-card" style="border-left: 3px solid #059669;">
-        <div class="kpi-label">Status dos Vales</div>
-        <div class="kpi-value" style="font-size: 11px; margin-top: 3px;">
-          <span style="color: #d97706;">${pendentesCount} Pendentes</span> • <span style="color: #059669;">${assinadosCount + compensadosCount} Finalizados</span>
-        </div>
-      </div>
-    </div>
+      currentY += 15;
+    };
 
-    <!-- Master Table -->
-    <table>
-      <thead>
-        <tr>
-          <th style="text-align: left; width: 65px;">Nº / Data</th>
-          <th style="text-align: left; width: 85px;">Mapa / Placa</th>
-          <th style="text-align: left; width: 170px;">Colaborador(es) & Rateio</th>
-          <th style="text-align: left; width: 220px; background: #eff6ff; color: #1e40af;">📦 Faltas Produtos Acabados (P.A.)</th>
-          <th style="text-align: left; width: 220px; background: #faf5ff; color: #6b21a8;">🔄 Faltas Ativos de Giro (A.G.)</th>
-          <th style="text-align: right; width: 95px;">Valor Total</th>
-          <th style="text-align: center; width: 80px;">Status</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rowsHtml}
-        <tr style="background: #f1f5f9; font-weight: 900; border-top: 2.5px solid #0f172a; font-size: 10px;">
-          <td colspan="3" style="padding: 7px 6px; text-transform: uppercase;">TOTAIS GERAIS CONSOLIDADOS (${list.length} VALES):</td>
-          <td style="padding: 7px 6px; font-family: monospace; color: #1e40af;">R$ ${totalGeralPA.toFixed(2)} (-${totalQtdPA} cx)</td>
-          <td style="padding: 7px 6px; font-family: monospace; color: #6b21a8;">R$ ${totalGeralAG.toFixed(2)} (-${totalQtdAG} un)</td>
-          <td style="padding: 7px 6px; text-align: right; font-family: monospace; font-size: 12px; color: #dc2626;">R$ ${totalGeralDescontos.toFixed(2)}</td>
-          <td style="padding: 7px 6px; text-align: center; font-size: 8.5px; color: #475569;">100% AUDITADO</td>
-        </tr>
-      </tbody>
-    </table>
+    drawHeader(1);
 
-    <div style="font-size: 8.5px; color: #64748b; line-height: 1.4; text-align: justify; margin-top: 6px;">
-      Este relatório reúne os vales de desconto emitidos com fundamento no Artigo 462, § 1º da CLT e nas políticas internas de aferição de retorno de rota da Pau Brasil Distribuidora Ltda. As faltas de Produtos Acabados (P.A.) e Ativos de Giro (A.G. - vasilhames e garrafeiras) foram conferidas fisicamente no retorno e conciliadas pelo fiscal de logística responsável.
-    </div>
+    // KPI Cards row (Page 1)
+    // Card 1: Mapas com Desvio
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(10, currentY, 52, 14, 1.5, 1.5, 'F');
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(10, currentY, 52, 14, 1.5, 1.5, 'S');
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text("MAPAS COM DESVIO", 13, currentY + 4);
+    doc.setFontSize(10);
+    doc.setTextColor(15, 23, 42);
+    doc.text(`${enrichedVales.length} mapas auditados`, 13, currentY + 10);
 
-    <!-- Signatures -->
-    <div class="signatures-grid">
-      <div>
-        <div class="sig-line">
-          <span class="sig-name">${currentUser.name}</span>
-          <span class="sig-role">Fiscal de Logística (Emissão / Aferição)</span>
-        </div>
-      </div>
-      <div>
-        <div class="sig-line">
-          <span class="sig-name">Elisson Minervino</span>
-          <span class="sig-role">Gestão de Logística (Aprovação)</span>
-        </div>
-      </div>
-      <div>
-        <div class="sig-line">
-          <span class="sig-name">Departamento Pessoal / RH</span>
-          <span class="sig-role">Lançamento & Desconto em Folha</span>
-        </div>
-      </div>
-    </div>
-  </div>
-</body>
-</html>
-    `;
+    // Card 2: Total Descontos R$
+    doc.setFillColor(254, 242, 242);
+    doc.roundedRect(66, currentY, 52, 14, 1.5, 1.5, 'F');
+    doc.setDrawColor(248, 113, 113);
+    doc.roundedRect(66, currentY, 52, 14, 1.5, 1.5, 'S');
+    doc.setFontSize(7);
+    doc.setTextColor(185, 28, 28);
+    doc.text("TOTAL DESCONTOS (R$)", 69, currentY + 4);
+    doc.setFontSize(10);
+    const displayTotalR = reportScope === 'PA' ? totalGeralPA : reportScope === 'AG' ? totalGeralAG : totalGeralDescontos;
+    doc.text(`R$ ${displayTotalR.toFixed(2)}`, 69, currentY + 10);
 
-    doc.open();
-    doc.write(html);
-    doc.close();
+    // Card 3: PA
+    doc.setFillColor(239, 246, 255);
+    doc.roundedRect(122, currentY, 52, 14, 1.5, 1.5, 'F');
+    doc.setDrawColor(147, 197, 253);
+    doc.roundedRect(122, currentY, 52, 14, 1.5, 1.5, 'S');
+    doc.setFontSize(7);
+    doc.setTextColor(30, 64, 175);
+    doc.text("FALTAS VEÍCULOS P.A.", 125, currentY + 4);
+    doc.setFontSize(9);
+    doc.text(`-${totalQtdPA} cx (R$ ${totalGeralPA.toFixed(2)})`, 125, currentY + 10);
 
-    setTimeout(() => {
-      iframe.contentWindow?.focus();
-      iframe.contentWindow?.print();
-    }, 250);
+    // Card 4: AG
+    doc.setFillColor(250, 245, 255);
+    doc.roundedRect(178, currentY, 52, 14, 1.5, 1.5, 'F');
+    doc.setDrawColor(216, 180, 254);
+    doc.roundedRect(178, currentY, 52, 14, 1.5, 1.5, 'S');
+    doc.setFontSize(7);
+    doc.setTextColor(107, 33, 168);
+    doc.text("FALTAS VEÍCULOS A.G.", 181, currentY + 4);
+    doc.setFontSize(9);
+    doc.text(`-${totalQtdAG} un (R$ ${totalGeralAG.toFixed(2)})`, 181, currentY + 10);
+
+    // Card 5: Sobras no Veículo
+    doc.setFillColor(240, 253, 244);
+    doc.roundedRect(234, currentY, 53, 14, 1.5, 1.5, 'F');
+    doc.setDrawColor(134, 239, 172);
+    doc.roundedRect(234, currentY, 53, 14, 1.5, 1.5, 'S');
+    doc.setFontSize(7);
+    doc.setTextColor(21, 128, 61);
+    doc.text("SOBRAS NO MESMO VEÍCULO", 237, currentY + 4);
+    doc.setFontSize(8.5);
+    doc.text(`+${totalSobrasPA} cx PA | +${totalSobrasAG} un AG`, 237, currentY + 10);
+
+    currentY += 17;
+
+    // Visual Charts Section
+    const totalShortageCost = (totalGeralPA + totalGeralAG) || 1;
+    const paPct = ((totalGeralPA / totalShortageCost) * 100);
+    const agPct = ((totalGeralAG / totalShortageCost) * 100);
+
+    // Chart Box 1: PA vs AG Distribution
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(10, currentY, 135, 16, 1.5, 1.5, 'F');
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(10, currentY, 135, 16, 1.5, 1.5, 'S');
+
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(7);
+    doc.setTextColor(30, 41, 59);
+    doc.text("PROPORÇÃO FINANCEIRA DO DESVIO (P.A. vs A.G.)", 14, currentY + 3.8);
+
+    const barX = 14;
+    const barY = currentY + 5.5;
+    const barW = 127;
+    const barH = 4.2;
+
+    doc.setFillColor(226, 232, 240);
+    doc.roundedRect(barX, barY, barW, barH, 1, 1, 'F');
+
+    const paBarW = (barW * paPct) / 100;
+    if (paBarW > 0) {
+      doc.setFillColor(37, 99, 235);
+      doc.roundedRect(barX, barY, paBarW, barH, 1, 1, 'F');
+    }
+    const agBarW = (barW * agPct) / 100;
+    if (agBarW > 0) {
+      doc.setFillColor(124, 58, 237);
+      doc.roundedRect(barX + paBarW, barY, agBarW, barH, 1, 1, 'F');
+    }
+
+    doc.setFontSize(6.5);
+    doc.setFillColor(37, 99, 235);
+    doc.rect(14, currentY + 11.5, 2.5, 2.5, 'F');
+    doc.setFont("Helvetica", "bold");
+    doc.setTextColor(30, 64, 175);
+    doc.text(`P.A.: R$ ${totalGeralPA.toFixed(2)} (${paPct.toFixed(1)}%)`, 18, currentY + 13.5);
+
+    doc.setFillColor(124, 58, 237);
+    doc.rect(75, currentY + 11.5, 2.5, 2.5, 'F');
+    doc.setTextColor(107, 33, 168);
+    doc.text(`A.G.: R$ ${totalGeralAG.toFixed(2)} (${agPct.toFixed(1)}%)`, 79, currentY + 13.5);
+
+    // Chart Box 2: Progress of Signatures
+    const totalValesCount = enrichedVales.length || 1;
+    const conclCount = assinadosCount + compensadosCount;
+    const conclPct = (conclCount / totalValesCount) * 100;
+    const pendPct = (pendentesCount / totalValesCount) * 100;
+
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(150, currentY, 137, 16, 1.5, 1.5, 'F');
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(150, currentY, 137, 16, 1.5, 1.5, 'S');
+
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(7);
+    doc.setTextColor(30, 41, 59);
+    doc.text("PROGRESSO DE CONCILIAÇÃO & ASSINATURAS", 154, currentY + 3.8);
+
+    const sBarX = 154;
+    const sBarY = currentY + 5.5;
+    const sBarW = 129;
+
+    doc.setFillColor(226, 232, 240);
+    doc.roundedRect(sBarX, sBarY, sBarW, barH, 1, 1, 'F');
+
+    const cW = (sBarW * conclPct) / 100;
+    if (cW > 0) {
+      doc.setFillColor(16, 185, 129);
+      doc.roundedRect(sBarX, sBarY, cW, barH, 1, 1, 'F');
+    }
+    const pW = (sBarW * pendPct) / 100;
+    if (pW > 0) {
+      doc.setFillColor(245, 158, 11);
+      doc.roundedRect(sBarX + cW, sBarY, pW, barH, 1, 1, 'F');
+    }
+
+    doc.setFontSize(6.5);
+    doc.setFillColor(16, 185, 129);
+    doc.rect(154, currentY + 11.5, 2.5, 2.5, 'F');
+    doc.setTextColor(5, 150, 105);
+    doc.text(`Finalizados: ${conclCount} (${conclPct.toFixed(0)}%)`, 158, currentY + 13.5);
+
+    doc.setFillColor(245, 158, 11);
+    doc.rect(205, currentY + 11.5, 2.5, 2.5, 'F');
+    doc.setTextColor(180, 83, 9);
+    doc.text(`Pendentes: ${pendentesCount} (${pendPct.toFixed(0)}%)`, 209, currentY + 13.5);
+
+    currentY += 20;
+
+    // Helper to draw Faltas Table Header for any map or after a page break
+    const drawFaltasTableHeader = () => {
+      doc.setFillColor(241, 245, 249);
+      doc.rect(10, currentY, 277, 6, 'F');
+      doc.setDrawColor(203, 213, 225);
+      doc.line(10, currentY, 287, currentY);
+      doc.line(10, currentY + 6, 287, currentY + 6);
+
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(7);
+      doc.setTextColor(51, 65, 85);
+
+      doc.text("CÓDIGO", 12, currentY + 4.2);
+      doc.text("DESCRIÇÃO DO PRODUTO / ATIVO COM FALTA", 34, currentY + 4.2);
+      doc.text("QTD FISCAL", 174, currentY + 4.2, { align: 'right' });
+      doc.text("QTD FÍSICA", 198, currentY + 4.2, { align: 'right' });
+      doc.text("DIFERENÇA (FALTA)", 230, currentY + 4.2, { align: 'right' });
+      doc.text("VALOR TOTAL (R$)", 284, currentY + 4.2, { align: 'right' });
+
+      currentY += 6;
+    };
+
+    // Helper to draw Sobras Table Header
+    const drawSobrasTableHeader = () => {
+      doc.setFillColor(240, 253, 244);
+      doc.rect(10, currentY, 277, 6, 'F');
+      doc.setDrawColor(187, 247, 208);
+      doc.line(10, currentY, 287, currentY);
+      doc.line(10, currentY + 6, 287, currentY + 6);
+
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(7);
+      doc.setTextColor(21, 128, 61);
+
+      doc.text("CÓDIGO", 12, currentY + 4.2);
+      doc.text("DESCRIÇÃO DO ITEM SOBRANTE (NO MESMO VEÍCULO)", 34, currentY + 4.2);
+      doc.text("QTD FISCAL", 174, currentY + 4.2, { align: 'right' });
+      doc.text("QTD FÍSICA", 198, currentY + 4.2, { align: 'right' });
+      doc.text("DIFERENÇA (SOBRA)", 230, currentY + 4.2, { align: 'right' });
+      doc.text("VALOR ESTIMADO (R$)", 284, currentY + 4.2, { align: 'right' });
+
+      currentY += 6;
+    };
+
+    // RENDER MAP BY MAP - ZERO HIDDEN ROWS, SEPARATED AND SYSTEMATIC
+    enrichedVales.forEach((item, mapIdx) => {
+      const { vale: v, shortages } = item;
+      const cleanMap = v.routeMap ? normalizeMapCode(v.routeMap).toUpperCase() : 'AVULSO';
+      const plate = shortages?.associatedAudit?.plate || 'Não informada';
+      const dateFormatted = v.dataGeracao ? formatDateBR(v.dataGeracao) : 'Data Não Informada';
+      const cleanIdStr = v.id.toString().replace(/^val_/, '');
+      const shortHash = cleanIdStr.length > 5 ? cleanIdStr.slice(-5) : cleanIdStr;
+      const valeCode = `V-${String(mapIdx + 1).padStart(2, '0')}`;
+      const st = v.status === 'COMPENSADO' ? 'COMPENSADO' : v.status === 'ASSINADO' ? 'ASSINADO' : 'PENDENTE';
+
+      // Shortages list for this map
+      const faltasList = reportScope === 'PA'
+        ? shortages.paShortages
+        : reportScope === 'AG'
+        ? shortages.agShortages
+        : [...shortages.paShortages, ...shortages.agShortages];
+
+      // Surpluses (sobras) list for this map
+      const sobrasList = reportScope === 'PA'
+        ? shortages.paSurpluses
+        : reportScope === 'AG'
+        ? shortages.agSurpluses
+        : [...shortages.paSurpluses, ...shortages.agSurpluses];
+
+      // Estimate height needed for map header + table header + at least 1 row
+      const estimatedMapBlockHeight = 24 + (faltasList.length * 5.2);
+      if (currentY + Math.min(estimatedMapBlockHeight, 35) > 190) {
+        doc.addPage();
+        currentY = 12;
+        pageNum++;
+        drawHeader(pageNum);
+      }
+
+      // Map Section Container Header Card
+      doc.setFillColor(241, 245, 249);
+      doc.roundedRect(10, currentY, 277, 8.5, 1, 1, 'F');
+      doc.setDrawColor(148, 163, 184);
+      doc.roundedRect(10, currentY, 277, 8.5, 1, 1, 'S');
+
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(8);
+      doc.setTextColor(15, 23, 42);
+      doc.text(`MAPA: ${cleanMap}   |   PLACA: ${plate}   |   DATA: ${dateFormatted}   |   MOTORISTA: ${v.colaboradorName.toUpperCase()}`, 13, currentY + 4);
+
+      // Rateio info & Vale Code on right
+      doc.setFont("Helvetica", "normal");
+      doc.setFontSize(6.8);
+      doc.setTextColor(71, 85, 105);
+      const helperListStr = (v.colaboradoresAdicionais || []).map(c => `+ ${c.name} (R$ ${(c.valor ?? 0).toFixed(2)})`).join(' ');
+      const rateioStr = `Vale: ${valeCode} (#${shortHash})   |   Status: ${st}   |   Rateio: ${v.colaboradorRole || 'Motorista'} (R$ ${(v.colaboradorValor || Number(v.valor) || 0).toFixed(2)}) ${helperListStr}`;
+      doc.text(rateioStr, 13, currentY + 7.2);
+
+      currentY += 9.5;
+
+      // Table 1: FALTAS CONFERIDAS
+      doc.setFillColor(254, 242, 242);
+      doc.rect(10, currentY, 277, 4.8, 'F');
+      doc.setTextColor(185, 28, 28);
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(7);
+      doc.text(`FALTAS CONFERIDAS NO VEÍCULO (DESCONTO DE VALE EMITIDO):`, 12, currentY + 3.4);
+      currentY += 4.8;
+
+      drawFaltasTableHeader();
+
+      let mapFaltasDiff = 0;
+      let mapFaltasCost = 0;
+
+      if (faltasList.length > 0) {
+        faltasList.forEach(p => {
+          mapFaltasDiff += p.diff;
+          mapFaltasCost += p.totalCost;
+
+          if (currentY + 5.5 > 190) {
+            doc.addPage();
+            currentY = 12;
+            pageNum++;
+            drawHeader(pageNum);
+            drawFaltasTableHeader();
+          }
+
+          doc.setFont("Courier", "bold");
+          doc.setFontSize(7);
+          doc.setTextColor(15, 23, 42);
+          doc.text(String(p.code), 12, currentY + 3.8);
+
+          doc.setFont("Helvetica", "normal");
+          doc.setFontSize(7);
+          doc.setTextColor(30, 41, 59);
+          const pNameClamped = p.name.length > 68 ? p.name.substring(0, 68) + '...' : p.name;
+          doc.text(pNameClamped, 34, currentY + 3.8);
+
+          doc.text(`${p.expected} ${p.unit}`, 174, currentY + 3.8, { align: 'right' });
+          doc.text(`${p.found} ${p.unit}`, 198, currentY + 3.8, { align: 'right' });
+
+          doc.setFont("Helvetica", "bold");
+          doc.setTextColor(220, 38, 38);
+          doc.text(`-${p.diff} ${p.unit}`, 230, currentY + 3.8, { align: 'right' });
+
+          doc.setFont("Courier", "bold");
+          doc.setTextColor(185, 28, 28);
+          doc.setFontSize(7.5);
+          doc.text(`R$ ${(p.totalCost).toFixed(2)}`, 284, currentY + 3.8, { align: 'right' });
+
+          doc.setDrawColor(241, 245, 249);
+          doc.line(10, currentY + 5.2, 287, currentY + 5.2);
+          currentY += 5.2;
+        });
+
+        // Subtotal Faltas Row
+        doc.setFillColor(248, 250, 252);
+        doc.rect(10, currentY, 277, 5.5, 'F');
+        doc.setDrawColor(226, 232, 240);
+        doc.line(10, currentY + 5.5, 287, currentY + 5.5);
+
+        doc.setFont("Helvetica", "bold");
+        doc.setFontSize(7);
+        doc.setTextColor(15, 23, 42);
+        doc.text(`SUBTOTAL FALTAS MAPA ${cleanMap}:`, 12, currentY + 3.8);
+
+        doc.setTextColor(220, 38, 38);
+        doc.text(`-${mapFaltasDiff} vol.`, 230, currentY + 3.8, { align: 'right' });
+
+        doc.setFont("Courier", "bold");
+        doc.setFontSize(8);
+        doc.text(`R$ ${mapFaltasCost.toFixed(2)}`, 284, currentY + 3.8, { align: 'right' });
+        currentY += 6.5;
+      } else {
+        doc.setFont("Helvetica", "italic");
+        doc.setFontSize(7);
+        doc.setTextColor(148, 163, 184);
+        doc.text("Nenhuma falta registrada nesta conferência física.", 12, currentY + 4);
+        currentY += 6;
+      }
+
+      // Table 2: SOBRAS NO MESMO VEÍCULO
+      if (sobrasList.length > 0) {
+        if (currentY + 18 > 190) {
+          doc.addPage();
+          currentY = 12;
+          pageNum++;
+          drawHeader(pageNum);
+        }
+
+        doc.setFillColor(236, 253, 245);
+        doc.rect(10, currentY, 277, 4.8, 'F');
+        doc.setTextColor(6, 95, 70);
+        doc.setFont("Helvetica", "bold");
+        doc.setFontSize(7);
+        doc.text(`⚠ SOBRAS IDENTIFICADAS NESTE MESMO VEÍCULO (ANÁLISE DE TROCA / INVERSÃO FISCAL):`, 12, currentY + 3.4);
+        currentY += 4.8;
+
+        drawSobrasTableHeader();
+
+        let mapSobrasDiff = 0;
+        let mapSobrasCost = 0;
+
+        sobrasList.forEach(s => {
+          mapSobrasDiff += s.diff;
+          mapSobrasCost += s.totalCost;
+
+          if (currentY + 5.5 > 190) {
+            doc.addPage();
+            currentY = 12;
+            pageNum++;
+            drawHeader(pageNum);
+            drawSobrasTableHeader();
+          }
+
+          doc.setFont("Courier", "bold");
+          doc.setFontSize(7);
+          doc.setTextColor(15, 23, 42);
+          doc.text(String(s.code), 12, currentY + 3.8);
+
+          doc.setFont("Helvetica", "normal");
+          doc.setFontSize(7);
+          doc.setTextColor(30, 41, 59);
+          const sNameClamped = s.name.length > 68 ? s.name.substring(0, 68) + '...' : s.name;
+          doc.text(sNameClamped, 34, currentY + 3.8);
+
+          doc.text(`${s.expected} ${s.unit}`, 174, currentY + 3.8, { align: 'right' });
+          doc.text(`${s.found} ${s.unit}`, 198, currentY + 3.8, { align: 'right' });
+
+          doc.setFont("Helvetica", "bold");
+          doc.setTextColor(5, 150, 105);
+          doc.text(`+${s.diff} ${s.unit}`, 230, currentY + 3.8, { align: 'right' });
+
+          doc.setFont("Courier", "bold");
+          doc.setTextColor(4, 120, 87);
+          doc.setFontSize(7.5);
+          doc.text(`R$ ${(s.totalCost).toFixed(2)}`, 284, currentY + 3.8, { align: 'right' });
+
+          doc.setDrawColor(241, 245, 249);
+          doc.line(10, currentY + 5.2, 287, currentY + 5.2);
+          currentY += 5.2;
+        });
+
+        // Subtotal Sobras Row
+        doc.setFillColor(240, 253, 244);
+        doc.rect(10, currentY, 277, 5.5, 'F');
+        doc.setDrawColor(187, 247, 208);
+        doc.line(10, currentY + 5.5, 287, currentY + 5.5);
+
+        doc.setFont("Helvetica", "bold");
+        doc.setFontSize(7);
+        doc.setTextColor(6, 95, 70);
+        doc.text(`TOTAL SOBRAS MAPA ${cleanMap}:`, 12, currentY + 3.8);
+
+        doc.text(`+${mapSobrasDiff} vol.`, 230, currentY + 3.8, { align: 'right' });
+
+        doc.setFont("Courier", "bold");
+        doc.setFontSize(8);
+        doc.text(`R$ ${mapSobrasCost.toFixed(2)}`, 284, currentY + 3.8, { align: 'right' });
+        currentY += 7.5;
+      } else {
+        // No surplus on this vehicle - explicit informative line
+        doc.setFillColor(248, 250, 252);
+        doc.roundedRect(10, currentY, 277, 4.8, 1, 1, 'F');
+        doc.setFont("Helvetica", "italic");
+        doc.setFontSize(6.5);
+        doc.setTextColor(100, 116, 139);
+        doc.text(`✓ Sobras no Veículo: Nenhuma sobra física registrada na conferência deste veículo.`, 13, currentY + 3.4);
+        currentY += 6.5;
+      }
+
+      currentY += 3.5;
+    });
+
+    // Grand Totals Summary Row across all maps
+    if (currentY + 12 > 185) {
+      doc.addPage();
+      currentY = 12;
+      pageNum++;
+      drawHeader(pageNum);
+    }
+
+    doc.setFillColor(241, 245, 249);
+    doc.rect(10, currentY, 277, 8, 'F');
+    doc.setDrawColor(15, 23, 42);
+    doc.setLineWidth(0.5);
+    doc.rect(10, currentY, 277, 8, 'S');
+
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(15, 23, 42);
+    doc.text(`TOTAIS GERAIS CONSOLIDADOS (${enrichedVales.length} MAPAS AUDITADOS):`, 12, currentY + 5.2);
+
+    if (reportScope === 'TODOS' || reportScope === 'PA') {
+      doc.setFont("Courier", "bold");
+      doc.setTextColor(30, 64, 175);
+      doc.text(`PA: R$ ${totalGeralPA.toFixed(2)} (-${totalQtdPA} cx)`, 110, currentY + 5.2);
+    }
+
+    if (reportScope === 'TODOS' || reportScope === 'AG') {
+      doc.setFont("Courier", "bold");
+      doc.setTextColor(107, 33, 168);
+      doc.text(`AG: R$ ${totalGeralAG.toFixed(2)} (-${totalQtdAG} un)`, 165, currentY + 5.2);
+    }
+
+    doc.setFont("Courier", "bold");
+    doc.setFontSize(9.5);
+    doc.setTextColor(220, 38, 38);
+    const finalGrandTotal = reportScope === 'PA' ? totalGeralPA : reportScope === 'AG' ? totalGeralAG : totalGeralDescontos;
+    doc.text(`R$ ${finalGrandTotal.toFixed(2)}`, 284, currentY + 5.2, { align: 'right' });
+
+    currentY += 14;
+
+    // Signatures Section
+    if (currentY + 25 > 195) {
+      doc.addPage();
+      currentY = 15;
+    }
+
+    const sigY = currentY + 12;
+
+    // Sig 1
+    doc.setDrawColor(71, 85, 105);
+    doc.line(20, sigY, 90, sigY);
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(15, 23, 42);
+    doc.text(currentUser.name || 'Fiscal', 55, sigY + 4, { align: 'center' });
+    doc.setFont("Helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text("Fiscal de Logística (Emissão / Aferição)", 55, sigY + 7.5, { align: 'center' });
+
+    // Sig 2
+    doc.line(113, sigY, 183, sigY);
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(15, 23, 42);
+    doc.text("Elisson Minervino", 148, sigY + 4, { align: 'center' });
+    doc.setFont("Helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text("Gestão de Logística (Aprovação)", 148, sigY + 7.5, { align: 'center' });
+
+    // Sig 3
+    doc.line(206, sigY, 276, sigY);
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(15, 23, 42);
+    doc.text("Departamento Pessoal / RH", 241, sigY + 4, { align: 'center' });
+    doc.setFont("Helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text("Lançamento & Desconto em Folha", 241, sigY + 7.5, { align: 'center' });
+
+    // Trigger direct file download with clear file names
+    const dateStr = valesFilterDate || new Date().toISOString().slice(0, 10);
+    const fileName = reportScope === 'PA' 
+      ? `relatorio_vales_PA_${dateStr}.pdf` 
+      : reportScope === 'AG'
+      ? `relatorio_vales_AG_${dateStr}.pdf`
+      : `relatorio_geral_vales_pa_ag_${dateStr}.pdf`;
+
+    doc.save(fileName);
   };
 
   // Vale Map mode: 'lista' (from maps with shortage) or 'manual' (type any map number)
@@ -3738,7 +4404,24 @@ export default function FiscalView({
     };
   }, [importedRoutes, audits, pendingAudits]);
 
-  const getDriverName = (id?: string) => !id ? '' : (id === 'temporario' ? 'Temporário' : (drivers.find(d => d.id === id)?.name || id));
+  const getDriverName = (id?: string, auditMap?: string) => {
+    if (!id) return '';
+    if (id === 'temporario') return 'Temporário';
+    const foundDriver = drivers.find(d => d.id === id);
+    if (foundDriver && foundDriver.name) return foundDriver.name;
+    // Check if importedRoutes has a driver name for this map or driverId
+    if (auditMap || /^\d+$/.test(id.trim())) {
+      const cleanMap = auditMap ? normalizeMapCode(auditMap).toUpperCase() : '';
+      const foundRoute = (importedRoutes || []).find(r => 
+        (cleanMap && normalizeMapCode(r.routeMap).toUpperCase() === cleanMap) ||
+        r.driverId === id
+      );
+      if (foundRoute && foundRoute.driverName && !/^\d+$/.test(foundRoute.driverName.trim())) {
+        return foundRoute.driverName;
+      }
+    }
+    return id;
+  };
   const getHelperName = (id?: string) => !id ? 'Sem ajudante' : (drivers.find(d => d.id === id)?.name || id);
 
   const getDaysOnRoute = (audit: AuditSession) => {
@@ -3822,7 +4505,7 @@ export default function FiscalView({
       }
 
       // 2. Text Search Filter (Audit level)
-      const driverName = getDriverName(audit.driverId);
+      const driverName = getDriverName(audit.driverId, audit.routeMap);
       if (filterNB.trim()) {
         const query = filterNB.trim().toLowerCase();
         const hasMatchedNB = (audit.clientCodeNB || '').toLowerCase().includes(query) ||
@@ -4262,168 +4945,654 @@ export default function FiscalView({
       return;
     }
 
-    const doc = new jsPDF();
-    let currentY = 15;
+    // 1. Group records by MAPA
+    interface MapDiscrepancyGroup {
+      map: string;
+      plate: string;
+      driverName: string;
+      arrivalDate: string;
+      auditId?: string;
+      associatedVale?: Vale;
+      faltas: ExportRecord[];
+      sobras: ExportRecord[];
+      totalFaltasQty: number;
+      totalFaltasVal: number;
+      totalSobrasQty: number;
+      totalSobrasVal: number;
+      saldoVal: number;
+    }
 
-    const checkPageBreak = (neededHeight: number) => {
-      if (currentY + neededHeight > 275) {
-        doc.addPage();
-        currentY = 15;
-        drawPageHeader();
-        return true;
-      }
-      return false;
-    };
+    const mapGroupsMap = new Map<string, MapDiscrepancyGroup>();
 
-    const drawPageHeader = () => {
-      doc.setFont("Helvetica", "bold");
-      doc.setFontSize(10);
-      doc.setTextColor(15, 23, 42);
-      doc.text("PAU BRASIL DISTRIBUIDORA DE BEBIDAS LTDA", 14, currentY);
+    records.forEach(r => {
+      const cleanMap = r.map ? normalizeMapCode(r.map).toUpperCase() : 'AVULSO';
+      const key = cleanMap || 'AVULSO';
       
+      if (!mapGroupsMap.has(key)) {
+        const matchingAudit = (audits || []).find(a => normalizeMapCode(a.routeMap).toUpperCase() === key);
+        const associatedVale = (vales || []).find(v => v.auditId === r.auditId || (v.routeMap && normalizeMapCode(v.routeMap).toUpperCase() === key));
+        
+        let driverName = r.driverName || '';
+        if (!driverName || /^\d+$/.test(driverName.trim())) {
+          driverName = getDriverName(matchingAudit?.driverId, cleanMap);
+        }
+
+        mapGroupsMap.set(key, {
+          map: cleanMap,
+          plate: r.plate || matchingAudit?.plate || 'Não informada',
+          driverName: driverName || 'Motorista',
+          arrivalDate: r.arrivalDate || matchingAudit?.arrivalDate || '',
+          auditId: r.auditId || matchingAudit?.id,
+          associatedVale,
+          faltas: [],
+          sobras: [],
+          totalFaltasQty: 0,
+          totalFaltasVal: 0,
+          totalSobrasQty: 0,
+          totalSobrasVal: 0,
+          saldoVal: 0
+        });
+      }
+
+      const group = mapGroupsMap.get(key)!;
+      if (r.deviationType === 'FALTA') {
+        group.faltas.push(r);
+        group.totalFaltasQty += Math.abs(r.divergence);
+        group.totalFaltasVal += (r.totalValue || 0);
+      } else {
+        group.sobras.push(r);
+        group.totalSobrasQty += r.divergence;
+        group.totalSobrasVal += (r.totalValue || 0);
+      }
+      group.saldoVal = group.totalSobrasVal - group.totalFaltasVal;
+    });
+
+    const mapGroups = Array.from(mapGroupsMap.values());
+
+    // Sort by Date descending, then Map ascending
+    mapGroups.sort((a, b) => {
+      const dateA = a.arrivalDate || '';
+      const dateB = b.arrivalDate || '';
+      if (dateA !== dateB) return dateB.localeCompare(dateA);
+      return a.map.localeCompare(b.map, undefined, { numeric: true });
+    });
+
+    // Metrics across all maps
+    let totalGeralFaltasQty = 0;
+    let totalGeralFaltasVal = 0;
+    let totalGeralSobrasQty = 0;
+    let totalGeralSobrasVal = 0;
+    let totalPAFaltasVal = 0;
+    let totalAGFaltasVal = 0;
+    let totalPASobrasVal = 0;
+    let totalAGSobrasVal = 0;
+
+    mapGroups.forEach(g => {
+      totalGeralFaltasQty += g.totalFaltasQty;
+      totalGeralFaltasVal += g.totalFaltasVal;
+      totalGeralSobrasQty += g.totalSobrasQty;
+      totalGeralSobrasVal += g.totalSobrasVal;
+
+      g.faltas.forEach(f => {
+        if (f.type === 'PA') totalPAFaltasVal += (f.totalValue || 0);
+        else totalAGFaltasVal += (f.totalValue || 0);
+      });
+      g.sobras.forEach(s => {
+        if (s.type === 'PA') totalPASobrasVal += (s.totalValue || 0);
+        else totalAGSobrasVal += (s.totalValue || 0);
+      });
+    });
+
+    const saldoLiquidoGeral = totalGeralSobrasVal - totalGeralFaltasVal;
+
+    // Filter labels
+    let periodoLabel = 'Todas as Datas Registradas';
+    if (filterDate) {
+      periodoLabel = `Data: ${formatDateBR(filterDate)}`;
+    } else if (filterStartDate && filterEndDate) {
+      periodoLabel = `Período: ${formatDateBR(filterStartDate)} até ${formatDateBR(filterEndDate)}`;
+    } else if (filterStartDate) {
+      periodoLabel = `A partir de: ${formatDateBR(filterStartDate)}`;
+    } else if (filterEndDate) {
+      periodoLabel = `Até: ${formatDateBR(filterEndDate)}`;
+    }
+
+    const scopeLabel = subTabDivergencias === 'all'
+      ? 'PRODUTOS ACABADOS (P.A.) & ATIVOS DE GIRO (A.G.)'
+      : subTabDivergencias === 'pa'
+      ? 'PRODUTOS ACABADOS (P.A.)'
+      : 'ATIVOS DE GIRO (A.G.)';
+
+    const desvioFilterLabel = filterType === 'all' 
+      ? 'SOBRAS E FALTAS' 
+      : filterType === 'sobra' 
+      ? 'APENAS SOBRAS' 
+      : 'APENAS FALTAS';
+
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    let currentY = 12;
+    let pageNum = 1;
+
+    const drawHeader = (pageNumber: number) => {
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(13);
+      doc.setTextColor(15, 23, 42);
+      doc.text("PAU BRASIL DISTRIBUIDORA LTDA", 10, currentY);
+
+      doc.setFont("Helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139);
+      doc.text("Gestão Logística de Retorno • Unidade Guarabira/PB • CD 04", 10, currentY + 4);
+
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(8.5);
+      doc.setTextColor(180, 83, 9);
+      doc.text(`RELATÓRIO CONSOLIDADO DE SOBRAS & FALTAS POR MAPA E MOTORISTA • ${desvioFilterLabel} • ${periodoLabel.toUpperCase()}`, 10, currentY + 9);
+
+      // Right header
       doc.setFont("Helvetica", "normal");
       doc.setFontSize(7.5);
-      doc.setTextColor(100, 116, 139);
-      doc.text("Guarabira / PB - CEP: 58200-000 | Fone: (83) 3271-1000", 120, currentY);
-      currentY += 4;
-      
-      doc.text("RELATÓRIO OPERACIONAL DE SOBRAS E FALTAS NÃO TRATADAS", 14, currentY);
-      currentY += 4;
-      
-      doc.setDrawColor(203, 213, 225);
-      doc.setLineWidth(0.3);
-      doc.line(14, currentY, 196, currentY);
+      doc.setTextColor(71, 85, 105);
+      const nowFormatted = new Date().toLocaleString('pt-BR');
+      doc.text(`Emissão: ${nowFormatted} | Pág. ${pageNumber}`, 287, currentY, { align: 'right' });
+      doc.text(`Operador: ${currentUser.name || 'Fiscal'} | Escopo: ${scopeLabel}`, 287, currentY + 4, { align: 'right' });
+
+      doc.setDrawColor(15, 23, 42);
+      doc.setLineWidth(0.6);
+      doc.line(10, currentY + 11, 287, currentY + 11);
+
+      currentY += 15;
+    };
+
+    drawHeader(1);
+
+    // KPI Summary Scorecards (Page 1)
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(10, currentY, 52, 14, 1.5, 1.5, 'F');
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(10, currentY, 52, 14, 1.5, 1.5, 'S');
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text("MAPAS ANALISADOS", 13, currentY + 4);
+    doc.setFontSize(10);
+    doc.setTextColor(15, 23, 42);
+    doc.text(`${mapGroups.length} mapas auditados`, 13, currentY + 10);
+
+    // Card 2: Faltas
+    doc.setFillColor(254, 242, 242);
+    doc.roundedRect(66, currentY, 52, 14, 1.5, 1.5, 'F');
+    doc.setDrawColor(248, 113, 113);
+    doc.roundedRect(66, currentY, 52, 14, 1.5, 1.5, 'S');
+    doc.setFontSize(7);
+    doc.setTextColor(185, 28, 28);
+    doc.text("FALTAS IDENTIFICADAS (-)", 69, currentY + 4);
+    doc.setFontSize(9);
+    doc.text(`-${totalGeralFaltasQty} vol. | R$ ${totalGeralFaltasVal.toFixed(2)}`, 69, currentY + 10);
+
+    // Card 3: Sobras
+    doc.setFillColor(240, 253, 244);
+    doc.roundedRect(122, currentY, 52, 14, 1.5, 1.5, 'F');
+    doc.setDrawColor(134, 239, 172);
+    doc.roundedRect(122, currentY, 52, 14, 1.5, 1.5, 'S');
+    doc.setFontSize(7);
+    doc.setTextColor(21, 128, 61);
+    doc.text("SOBRAS IDENTIFICADAS (+)", 125, currentY + 4);
+    doc.setFontSize(9);
+    doc.text(`+${totalGeralSobrasQty} vol. | R$ ${totalGeralSobrasVal.toFixed(2)}`, 125, currentY + 10);
+
+    // Card 4: Saldo Líquido Operacional
+    const isPositivo = saldoLiquidoGeral >= 0;
+    doc.setFillColor(isPositivo ? 254 : 255, isPositivo ? 243 : 241, isPositivo ? 199 : 242);
+    doc.roundedRect(178, currentY, 52, 14, 1.5, 1.5, 'F');
+    doc.setDrawColor(isPositivo ? 251 : 248, isPositivo ? 191 : 113, isPositivo ? 36 : 113);
+    doc.roundedRect(178, currentY, 52, 14, 1.5, 1.5, 'S');
+    doc.setFontSize(7);
+    doc.setTextColor(isPositivo ? 146 : 185, isPositivo ? 64 : 28, isPositivo ? 14 : 28);
+    doc.text("SALDO LÍQUIDO OPERACIONAL", 181, currentY + 4);
+    doc.setFontSize(9.5);
+    doc.text(`R$ ${saldoLiquidoGeral.toFixed(2)}`, 181, currentY + 10);
+
+    // Card 5: Total Itens Divergentes
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(234, currentY, 53, 14, 1.5, 1.5, 'F');
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(234, currentY, 53, 14, 1.5, 1.5, 'S');
+    doc.setFontSize(7);
+    doc.setTextColor(71, 85, 105);
+    doc.text("OCORRÊNCIAS REGISTRADAS", 237, currentY + 4);
+    doc.setFontSize(9);
+    doc.setTextColor(15, 23, 42);
+    doc.text(`${records.length} itens divergentes`, 237, currentY + 10);
+
+    currentY += 17;
+
+    // Visual Charts / Proportion bars
+    const sumFaltasSobras = (totalGeralFaltasVal + totalGeralSobrasVal) || 1;
+    const faltasPct = ((totalGeralFaltasVal / sumFaltasSobras) * 100);
+    const sobrasPct = ((totalGeralSobrasVal / sumFaltasSobras) * 100);
+
+    // Chart Box 1: Sobras vs Faltas
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(10, currentY, 135, 16, 1.5, 1.5, 'F');
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(10, currentY, 135, 16, 1.5, 1.5, 'S');
+
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(7);
+    doc.setTextColor(30, 41, 59);
+    doc.text("PROPORÇÃO FINANCEIRA (SOBRAS vs FALTAS)", 14, currentY + 3.8);
+
+    const barX = 14;
+    const barY = currentY + 5.5;
+    const barW = 127;
+    const barH = 4.2;
+
+    doc.setFillColor(226, 232, 240);
+    doc.roundedRect(barX, barY, barW, barH, 1, 1, 'F');
+
+    const sobrasBarW = (barW * sobrasPct) / 100;
+    if (sobrasBarW > 0) {
+      doc.setFillColor(16, 185, 129);
+      doc.roundedRect(barX, barY, sobrasBarW, barH, 1, 1, 'F');
+    }
+    const faltasBarW = (barW * faltasPct) / 100;
+    if (faltasBarW > 0) {
+      doc.setFillColor(239, 68, 68);
+      doc.roundedRect(barX + sobrasBarW, barY, faltasBarW, barH, 1, 1, 'F');
+    }
+
+    doc.setFontSize(6.5);
+    doc.setFillColor(16, 185, 129);
+    doc.rect(14, currentY + 11.5, 2.5, 2.5, 'F');
+    doc.setFont("Helvetica", "bold");
+    doc.setTextColor(4, 120, 87);
+    doc.text(`Sobras: R$ ${totalGeralSobrasVal.toFixed(2)} (${sobrasPct.toFixed(1)}%)`, 18, currentY + 13.5);
+
+    doc.setFillColor(239, 68, 68);
+    doc.rect(75, currentY + 11.5, 2.5, 2.5, 'F');
+    doc.setTextColor(185, 28, 28);
+    doc.text(`Faltas: R$ ${totalGeralFaltasVal.toFixed(2)} (${faltasPct.toFixed(1)}%)`, 79, currentY + 13.5);
+
+    // Chart Box 2: PA vs AG Desvios
+    const sumPaAg = (totalPAFaltasVal + totalAGFaltasVal + totalPASobrasVal + totalAGSobrasVal) || 1;
+    const totalPAAll = totalPAFaltasVal + totalPASobrasVal;
+    const totalAGAll = totalAGFaltasVal + totalAGSobrasVal;
+    const paPct = ((totalPAAll / sumPaAg) * 100);
+    const agPct = ((totalAGAll / sumPaAg) * 100);
+
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(150, currentY, 137, 16, 1.5, 1.5, 'F');
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(150, currentY, 137, 16, 1.5, 1.5, 'S');
+
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(7);
+    doc.setTextColor(30, 41, 59);
+    doc.text("SEGREGADO POR CATEGORIA (P.A. BEBIDAS vs A.G. ATIVOS)", 154, currentY + 3.8);
+
+    const sBarX = 154;
+    const sBarY = currentY + 5.5;
+    const sBarW = 129;
+
+    doc.setFillColor(226, 232, 240);
+    doc.roundedRect(sBarX, sBarY, sBarW, barH, 1, 1, 'F');
+
+    const paW = (sBarW * paPct) / 100;
+    if (paW > 0) {
+      doc.setFillColor(37, 99, 235);
+      doc.roundedRect(sBarX, sBarY, paW, barH, 1, 1, 'F');
+    }
+    const agW = (sBarW * agPct) / 100;
+    if (agW > 0) {
+      doc.setFillColor(147, 51, 234);
+      doc.roundedRect(sBarX + paW, sBarY, agW, barH, 1, 1, 'F');
+    }
+
+    doc.setFontSize(6.5);
+    doc.setFillColor(37, 99, 235);
+    doc.rect(154, currentY + 11.5, 2.5, 2.5, 'F');
+    doc.setFont("Helvetica", "bold");
+    doc.setTextColor(30, 64, 175);
+    doc.text(`P.A.: R$ ${totalPAAll.toFixed(2)} (${paPct.toFixed(1)}%)`, 158, currentY + 13.5);
+
+    doc.setFillColor(147, 51, 234);
+    doc.rect(215, currentY + 11.5, 2.5, 2.5, 'F');
+    doc.setTextColor(126, 34, 206);
+    doc.text(`A.G.: R$ ${totalAGAll.toFixed(2)} (${agPct.toFixed(1)}%)`, 219, currentY + 13.5);
+
+    currentY += 19;
+
+    // Helper to draw Faltas Table Header
+    const drawFaltasTableHeader = () => {
+      doc.setFillColor(254, 242, 242);
+      doc.rect(10, currentY, 277, 6, 'F');
+      doc.setDrawColor(252, 165, 165);
+      doc.line(10, currentY, 277, currentY);
+      doc.line(10, currentY + 6, 277, currentY + 6);
+
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(7);
+      doc.setTextColor(185, 28, 28);
+
+      doc.text("CÓDIGO", 12, currentY + 4.2);
+      doc.text("DESCRIÇÃO DO PRODUTO / ATIVO COM FALTA", 34, currentY + 4.2);
+      doc.text("TIPO", 155, currentY + 4.2);
+      doc.text("QTD FISCAL", 174, currentY + 4.2, { align: 'right' });
+      doc.text("QTD FÍSICA", 198, currentY + 4.2, { align: 'right' });
+      doc.text("DIFERENÇA (FALTA)", 230, currentY + 4.2, { align: 'right' });
+      doc.text("VALOR TOTAL (R$)", 284, currentY + 4.2, { align: 'right' });
+
       currentY += 6;
     };
 
-    drawPageHeader();
+    // Helper to draw Sobras Table Header
+    const drawSobrasTableHeader = () => {
+      doc.setFillColor(240, 253, 244);
+      doc.rect(10, currentY, 277, 6, 'F');
+      doc.setDrawColor(187, 247, 208);
+      doc.line(10, currentY, 277, currentY);
+      doc.line(10, currentY + 6, 277, currentY + 6);
 
-    doc.setFont("Helvetica", "bold");
-    doc.setFontSize(11);
-    doc.setTextColor(15, 23, 42);
-    const filterLabel = subTabDivergencias === 'all' ? 'PRODUTOS E ATIVOS (P.A. / A.G.)' : subTabDivergencias === 'pa' ? 'PRODUTOS ACABADOS (P.A.)' : 'ATIVOS DE GIRO (A.G.)';
-    doc.text(`SOBRAS & FALTAS PENDENTES - ${filterLabel}`, 14, currentY);
-    currentY += 5;
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(7);
+      doc.setTextColor(21, 128, 61);
 
-    doc.setFont("Helvetica", "normal");
-    doc.setFontSize(8);
-    doc.setTextColor(71, 85, 105);
-    const filterInfo = `Filtros: Busca: "${filterNB || 'Nenhum'}" | Data: ${filterDate || 'Todas'} | Desvio: ${filterType === 'all' ? 'Todos' : filterType === 'sobra' ? 'Apenas Sobras' : 'Apenas Faltas'}`;
-    doc.text(filterInfo, 14, currentY);
-    currentY += 8;
+      doc.text("CÓDIGO", 12, currentY + 4.2);
+      doc.text("DESCRIÇÃO DO ITEM SOBRANTE NO VEÍCULO", 34, currentY + 4.2);
+      doc.text("TIPO", 155, currentY + 4.2);
+      doc.text("QTD FISCAL", 174, currentY + 4.2, { align: 'right' });
+      doc.text("QTD FÍSICA", 198, currentY + 4.2, { align: 'right' });
+      doc.text("DIFERENÇA (SOBRA)", 230, currentY + 4.2, { align: 'right' });
+      doc.text("VALOR ESTIMADO (R$)", 284, currentY + 4.2, { align: 'right' });
 
-    doc.setFillColor(15, 23, 42);
-    doc.rect(14, currentY, 182, 7, "F");
-    
-    doc.setFont("Helvetica", "bold");
-    doc.setFontSize(7.5);
-    doc.setTextColor(255, 255, 255);
-    
-    const colX = {
-      map: 16,
-      driver: 34,
-      item: 69,
-      type: 124,
-      deviation: 136,
-      fiscal: 151,
-      physical: 166,
-      diverg: 181
+      currentY += 6;
     };
 
-    doc.text("MAPA", colX.map, currentY + 5);
-    doc.text("MOTORISTA", colX.driver, currentY + 5);
-    doc.text("PRODUTO / ATIVO", colX.item, currentY + 5);
-    doc.text("TIPO", colX.type, currentY + 5);
-    doc.text("DESVIO", colX.deviation, currentY + 5);
-    doc.text("FISC", colX.fiscal, currentY + 5);
-    doc.text("FÍS", colX.physical, currentY + 5);
-    doc.text("DIV", colX.diverg, currentY + 5);
-    currentY += 7;
+    // Render Map by Map
+    mapGroups.forEach((group) => {
+      const dateFormatted = group.arrivalDate ? formatDateBR(group.arrivalDate) : 'Data Não Informada';
 
-    let alternate = false;
-    records.forEach(r => {
-      checkPageBreak(7);
-      
-      if (alternate) {
-        doc.setFillColor(248, 250, 252);
-        doc.rect(14, currentY, 182, 6.5, "F");
-      }
-      alternate = !alternate;
-
-      doc.setDrawColor(241, 245, 249);
-      doc.setLineWidth(0.25);
-      doc.line(14, currentY + 6.5, 196, currentY + 6.5);
-
-      doc.setFont("Helvetica", "normal");
-      doc.setFontSize(7);
-      doc.setTextColor(30, 41, 59);
-
-      let desc = r.itemDescription;
-      if (desc.length > 32) {
-        desc = desc.substring(0, 30) + "...";
+      // Estimate height needed for map header + table
+      if (currentY + 32 > 190) {
+        doc.addPage();
+        currentY = 12;
+        pageNum++;
+        drawHeader(pageNum);
       }
 
-      let dName = r.driverName;
-      if (dName.length > 20) {
-        dName = dName.substring(0, 18) + "..";
-      }
-
-      doc.text(r.map, colX.map, currentY + 4.5);
-      doc.text(dName, colX.driver, currentY + 4.5);
-      doc.text(desc, colX.item, currentY + 4.5);
-      
-      doc.setFont("Helvetica", "bold");
-      doc.text(r.type, colX.type, currentY + 4.5);
-
-      if (r.deviationType === 'SOBRA') {
-        doc.setTextColor(16, 124, 65);
-        doc.text("SOBRA", colX.deviation, currentY + 4.5);
-      } else {
-        doc.setTextColor(220, 38, 38);
-        doc.text("FALTA", colX.deviation, currentY + 4.5);
-      }
-      doc.setTextColor(30, 41, 59);
-      doc.setFont("Helvetica", "normal");
-
-      doc.text(String(r.fiscalQty), colX.fiscal, currentY + 4.5);
-      doc.text(String(r.physicalQty), colX.physical, currentY + 4.5);
+      // Map Container Header Card
+      doc.setFillColor(241, 245, 249);
+      doc.roundedRect(10, currentY, 277, 8.5, 1, 1, 'F');
+      doc.setDrawColor(148, 163, 184);
+      doc.roundedRect(10, currentY, 277, 8.5, 1, 1, 'S');
 
       doc.setFont("Helvetica", "bold");
-      if (r.divergence > 0) {
-        doc.setTextColor(16, 124, 65);
-        doc.text(`+${r.divergence}`, colX.diverg, currentY + 4.5);
-      } else {
-        doc.setTextColor(220, 38, 38);
-        doc.text(String(r.divergence), colX.diverg, currentY + 4.5);
+      doc.setFontSize(8);
+      doc.setTextColor(15, 23, 42);
+      doc.text(`MAPA: ${group.map}   |   PLACA: ${group.plate}   |   DATA: ${dateFormatted}   |   MOTORISTA RESPONSÁVEL: ${group.driverName.toUpperCase()}`, 13, currentY + 4);
+
+      // Financial balance summary line
+      doc.setFont("Helvetica", "normal");
+      doc.setFontSize(6.8);
+      doc.setTextColor(71, 85, 105);
+      const valeInfoStr = group.associatedVale ? `Vale Emitido: #${group.associatedVale.id.slice(-6)} (R$ ${Number(group.associatedVale.valor).toFixed(2)})` : 'Sem vale gerado';
+      doc.text(`Faltas: -${group.totalFaltasQty} vol. (R$ ${group.totalFaltasVal.toFixed(2)})   |   Sobras: +${group.totalSobrasQty} vol. (R$ ${group.totalSobrasVal.toFixed(2)})   |   Saldo Líquido do Mapa: R$ ${group.saldoVal.toFixed(2)}   |   ${valeInfoStr}`, 13, currentY + 7.2);
+
+      currentY += 9.5;
+
+      // Section 1: FALTAS DO MAPA
+      if (filterType !== 'sobra') {
+        doc.setFillColor(254, 242, 242);
+        doc.rect(10, currentY, 277, 4.8, 'F');
+        doc.setTextColor(185, 28, 28);
+        doc.setFont("Helvetica", "bold");
+        doc.setFontSize(7);
+        doc.text(`FALTAS REGISTRADAS NO VEÍCULO (${group.faltas.length} itens • R$ ${group.totalFaltasVal.toFixed(2)}):`, 12, currentY + 3.4);
+        currentY += 4.8;
+
+        if (group.faltas.length > 0) {
+          drawFaltasTableHeader();
+
+          group.faltas.forEach(f => {
+            if (currentY + 5.5 > 190) {
+              doc.addPage();
+              currentY = 12;
+              pageNum++;
+              drawHeader(pageNum);
+              drawFaltasTableHeader();
+            }
+
+            doc.setFont("Courier", "bold");
+            doc.setFontSize(7);
+            doc.setTextColor(15, 23, 42);
+            doc.text(String(f.itemCode), 12, currentY + 3.8);
+
+            doc.setFont("Helvetica", "normal");
+            doc.setFontSize(7);
+            doc.setTextColor(30, 41, 59);
+            const descClamped = f.itemDescription.length > 60 ? f.itemDescription.substring(0, 60) + '...' : f.itemDescription;
+            doc.text(descClamped, 34, currentY + 3.8);
+
+            doc.setFont("Helvetica", "bold");
+            doc.setFontSize(6.5);
+            doc.text(f.type, 155, currentY + 3.8);
+
+            doc.setFont("Helvetica", "normal");
+            doc.setFontSize(7);
+            doc.text(`${f.fiscalQty} ${f.unit}`, 174, currentY + 3.8, { align: 'right' });
+            doc.text(`${f.physicalQty} ${f.unit}`, 198, currentY + 3.8, { align: 'right' });
+
+            doc.setFont("Helvetica", "bold");
+            doc.setTextColor(220, 38, 38);
+            doc.text(`${f.divergence} ${f.unit}`, 230, currentY + 3.8, { align: 'right' });
+
+            doc.setFont("Courier", "bold");
+            doc.setTextColor(185, 28, 28);
+            doc.setFontSize(7.5);
+            doc.text(`R$ ${(f.totalValue || 0).toFixed(2)}`, 284, currentY + 3.8, { align: 'right' });
+
+            doc.setDrawColor(241, 245, 249);
+            doc.line(10, currentY + 5.2, 287, currentY + 5.2);
+            currentY += 5.2;
+          });
+
+          // Subtotal Faltas
+          doc.setFillColor(248, 250, 252);
+          doc.rect(10, currentY, 277, 5.5, 'F');
+          doc.setDrawColor(226, 232, 240);
+          doc.line(10, currentY + 5.5, 287, currentY + 5.5);
+
+          doc.setFont("Helvetica", "bold");
+          doc.setFontSize(7);
+          doc.setTextColor(15, 23, 42);
+          doc.text(`SUBTOTAL FALTAS MAPA ${group.map}:`, 12, currentY + 3.8);
+
+          doc.setTextColor(220, 38, 38);
+          doc.text(`-${group.totalFaltasQty} vol.`, 230, currentY + 3.8, { align: 'right' });
+
+          doc.setFont("Courier", "bold");
+          doc.setFontSize(8);
+          doc.text(`R$ ${group.totalFaltasVal.toFixed(2)}`, 284, currentY + 3.8, { align: 'right' });
+          currentY += 6.5;
+        } else {
+          doc.setFont("Helvetica", "italic");
+          doc.setFontSize(7);
+          doc.setTextColor(148, 163, 184);
+          doc.text("✓ Nenhuma falta registrada na conferência física deste mapa.", 12, currentY + 4);
+          currentY += 6;
+        }
       }
 
-      currentY += 6.5;
+      // Section 2: SOBRAS DO MAPA
+      if (filterType !== 'falta') {
+        if (currentY + 18 > 190) {
+          doc.addPage();
+          currentY = 12;
+          pageNum++;
+          drawHeader(pageNum);
+        }
+
+        doc.setFillColor(236, 253, 245);
+        doc.rect(10, currentY, 277, 4.8, 'F');
+        doc.setTextColor(6, 95, 70);
+        doc.setFont("Helvetica", "bold");
+        doc.setFontSize(7);
+        doc.text(`SOBRAS REGISTRADAS NO VEÍCULO (${group.sobras.length} itens • R$ ${group.totalSobrasVal.toFixed(2)}):`, 12, currentY + 3.4);
+        currentY += 4.8;
+
+        if (group.sobras.length > 0) {
+          drawSobrasTableHeader();
+
+          group.sobras.forEach(s => {
+            if (currentY + 5.5 > 190) {
+              doc.addPage();
+              currentY = 12;
+              pageNum++;
+              drawHeader(pageNum);
+              drawSobrasTableHeader();
+            }
+
+            doc.setFont("Courier", "bold");
+            doc.setFontSize(7);
+            doc.setTextColor(15, 23, 42);
+            doc.text(String(s.itemCode), 12, currentY + 3.8);
+
+            doc.setFont("Helvetica", "normal");
+            doc.setFontSize(7);
+            doc.setTextColor(30, 41, 59);
+            const descClamped = s.itemDescription.length > 60 ? s.itemDescription.substring(0, 60) + '...' : s.itemDescription;
+            doc.text(descClamped, 34, currentY + 3.8);
+
+            doc.setFont("Helvetica", "bold");
+            doc.setFontSize(6.5);
+            doc.text(s.type, 155, currentY + 3.8);
+
+            doc.setFont("Helvetica", "normal");
+            doc.setFontSize(7);
+            doc.text(`${s.fiscalQty} ${s.unit}`, 174, currentY + 3.8, { align: 'right' });
+            doc.text(`${s.physicalQty} ${s.unit}`, 198, currentY + 3.8, { align: 'right' });
+
+            doc.setFont("Helvetica", "bold");
+            doc.setTextColor(5, 150, 105);
+            doc.text(`+${s.divergence} ${s.unit}`, 230, currentY + 3.8, { align: 'right' });
+
+            doc.setFont("Courier", "bold");
+            doc.setTextColor(4, 120, 87);
+            doc.setFontSize(7.5);
+            doc.text(`R$ ${(s.totalValue || 0).toFixed(2)}`, 284, currentY + 3.8, { align: 'right' });
+
+            doc.setDrawColor(241, 245, 249);
+            doc.line(10, currentY + 5.2, 287, currentY + 5.2);
+            currentY += 5.2;
+          });
+
+          // Subtotal Sobras
+          doc.setFillColor(240, 253, 244);
+          doc.rect(10, currentY, 277, 5.5, 'F');
+          doc.setDrawColor(187, 247, 208);
+          doc.line(10, currentY + 5.5, 287, currentY + 5.5);
+
+          doc.setFont("Helvetica", "bold");
+          doc.setFontSize(7);
+          doc.setTextColor(6, 95, 70);
+          doc.text(`SUBTOTAL SOBRAS MAPA ${group.map}:`, 12, currentY + 3.8);
+
+          doc.text(`+${group.totalSobrasQty} vol.`, 230, currentY + 3.8, { align: 'right' });
+
+          doc.setFont("Courier", "bold");
+          doc.setFontSize(8);
+          doc.text(`R$ ${group.totalSobrasVal.toFixed(2)}`, 284, currentY + 3.8, { align: 'right' });
+          currentY += 7.5;
+        } else {
+          doc.setFont("Helvetica", "italic");
+          doc.setFontSize(7);
+          doc.setTextColor(148, 163, 184);
+          doc.text("✓ Nenhuma sobra registrada na conferência física deste mapa.", 12, currentY + 4);
+          currentY += 6;
+        }
+      }
+
+      currentY += 4;
     });
 
-    checkPageBreak(30);
-    currentY += 5;
-    
-    doc.setDrawColor(226, 232, 240);
-    doc.setFillColor(248, 250, 252);
-    doc.rect(14, currentY, 182, 18, "FD");
+    // Grand Totals Summary Row across all maps
+    if (currentY + 16 > 185) {
+      doc.addPage();
+      currentY = 12;
+      pageNum++;
+      drawHeader(pageNum);
+    }
+
+    doc.setFillColor(241, 245, 249);
+    doc.rect(10, currentY, 277, 9, 'F');
+    doc.setDrawColor(15, 23, 42);
+    doc.setLineWidth(0.5);
+    doc.rect(10, currentY, 277, 9, 'S');
 
     doc.setFont("Helvetica", "bold");
-    doc.setFontSize(8.5);
-    doc.setTextColor(15, 23, 42);
-    doc.text("RESUMO DE DIVERGÊNCIAS NÃO TRATADAS", 18, currentY + 5.5);
-
-    const totalSobras = records.filter(r => r.deviationType === 'SOBRA').length;
-    const totalFaltas = records.filter(r => r.deviationType === 'FALTA').length;
-
-    doc.setFont("Helvetica", "normal");
     doc.setFontSize(8);
-    doc.setTextColor(51, 65, 85);
-    doc.text(`Total de ocorrências: ${records.length} itens.`, 18, currentY + 11.5);
-    doc.text(`Sobras pendentes: ${totalSobras} itens  |  Faltas pendentes: ${totalFaltas} itens`, 18, currentY + 15.5);
+    doc.setTextColor(15, 23, 42);
+    doc.text(`TOTAIS GERAIS CONSOLIDADOS (${mapGroups.length} MAPAS AUDITADOS):`, 12, currentY + 5.5);
+
+    doc.setFont("Courier", "bold");
+    doc.setTextColor(185, 28, 28);
+    doc.text(`Faltas: R$ ${totalGeralFaltasVal.toFixed(2)} (-${totalGeralFaltasQty} vol.)`, 98, currentY + 5.5);
+
+    doc.setTextColor(4, 120, 87);
+    doc.text(`Sobras: R$ ${totalGeralSobrasVal.toFixed(2)} (+${totalGeralSobrasQty} vol.)`, 160, currentY + 5.5);
+
+    doc.setFontSize(9);
+    doc.setTextColor(isPositivo ? 146 : 185, isPositivo ? 64 : 28, isPositivo ? 14 : 28);
+    doc.text(`Saldo: R$ ${saldoLiquidoGeral.toFixed(2)}`, 284, currentY + 5.5, { align: 'right' });
+
+    currentY += 15;
+
+    // Signatures Section
+    if (currentY + 25 > 195) {
+      doc.addPage();
+      currentY = 15;
+    }
+
+    const sigY = currentY + 12;
+
+    // Sig 1
+    doc.setDrawColor(71, 85, 105);
+    doc.line(20, sigY, 90, sigY);
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(15, 23, 42);
+    doc.text(currentUser.name || 'Fiscal de Logística', 55, sigY + 4, { align: 'center' });
+    doc.setFont("Helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text("Fiscal de Logística (Emissão / Aferição)", 55, sigY + 7.5, { align: 'center' });
+
+    // Sig 2
+    doc.line(113, sigY, 183, sigY);
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(15, 23, 42);
+    doc.text("Elisson Minervino", 148, sigY + 4, { align: 'center' });
+    doc.setFont("Helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text("Gestão de Logística (Aprovação)", 148, sigY + 7.5, { align: 'center' });
+
+    // Sig 3
+    doc.line(206, sigY, 276, sigY);
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(15, 23, 42);
+    doc.text("Conferência de Retorno / CD", 241, sigY + 4, { align: 'center' });
+    doc.setFont("Helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text("Validação Física / DPO", 241, sigY + 7.5, { align: 'center' });
 
     const filterDesc = subTabDivergencias === 'all' ? 'geral' : subTabDivergencias === 'pa' ? 'pa' : 'ag';
     const dateStr = new Date().toISOString().split('T')[0];
-    doc.save(`sobras_e_faltas_pendentes_${filterDesc}_${dateStr}.pdf`);
+    doc.save(`relatorio_sobras_e_faltas_por_mapa_${filterDesc}_${dateStr}.pdf`);
   };
 
   // Reopening handlers for Auxiliar de Logística, Gestor and Financeiro
@@ -5429,8 +6598,22 @@ export default function FiscalView({
     }
 
     const now = new Date().toISOString();
+
+    // Preserve first physical count quantities on items and assets so conferente doesn't get zerado items
+    const updatedItems = (activeSession.items || []).map(item => ({
+      ...item,
+      rePhysicalQty: item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty
+    }));
+
+    const updatedAssets = (activeSession.assets || []).map(asset => ({
+      ...asset,
+      rePhysicalQty: asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty
+    }));
+
     const updatedSession: AuditSession = {
       ...activeSession,
+      items: updatedItems,
+      assets: updatedAssets,
       status: 'reconferencia',
       reconciliationNotes: reconciliationNotes.trim(),
       history: [
@@ -8881,54 +10064,24 @@ export default function FiscalView({
                         </div>
                       </div>
 
-                      {/* Date Range: De */}
-                      <div className="md:col-span-2 space-y-1">
-                        <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">
-                          Data De
-                        </label>
-                        <input
-                          type="date"
-                          value={filterStartDate}
-                          onChange={(e) => {
-                            setFilterStartDate(e.target.value);
-                            if (e.target.value) setFilterDate('');
-                          }}
-                          className="w-full text-xs px-2.5 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500 transition font-mono text-[11px]"
-                        />
-                      </div>
-
-                      {/* Date Range: Até */}
-                      <div className="md:col-span-2 space-y-1">
-                        <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">
-                          Data Até
-                        </label>
-                        <input
-                          type="date"
-                          value={filterEndDate}
-                          onChange={(e) => {
-                            setFilterEndDate(e.target.value);
-                            if (e.target.value) setFilterDate('');
-                          }}
-                          className="w-full text-xs px-2.5 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500 transition font-mono text-[11px]"
-                        />
-                      </div>
-
-                      {/* Specific Date */}
-                      <div className="md:col-span-2 space-y-1">
-                        <label className="block text-[10px] font-bold text-slate-500 uppercase font-sans">
-                          Data Única
-                        </label>
-                        <input
-                          type="date"
-                          value={filterDate}
-                          onChange={(e) => {
-                            setFilterDate(e.target.value);
-                            if (e.target.value) {
+                      {/* Single Unified Calendar Picker */}
+                      <div className="md:col-span-6 space-y-1">
+                        <UnifiedCalendarPicker
+                          label="Filtro Calendariado de Data (Dia Único com 2 cliques ou Período)"
+                          startDate={filterStartDate || filterDate}
+                          endDate={filterEndDate || filterDate}
+                          onChange={(start, end) => {
+                            if (start === end) {
+                              setFilterDate(start);
                               setFilterStartDate('');
                               setFilterEndDate('');
+                            } else {
+                              setFilterDate('');
+                              setFilterStartDate(start);
+                              setFilterEndDate(end);
                             }
                           }}
-                          className="w-full text-xs px-2.5 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-amber-500 transition font-mono text-[11px]"
+                          variant="amber"
                         />
                       </div>
 
@@ -9183,105 +10336,252 @@ export default function FiscalView({
                       </p>
                     </div>
                   ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left text-xs border-collapse">
-                        <thead>
-                          <tr className="bg-slate-100/80 border-b border-slate-200 text-[10px] font-extrabold uppercase text-slate-600 font-sans tracking-wider">
-                            <th className="p-3">Data</th>
-                            <th className="p-3">Colaborador / Motorista</th>
-                            <th className="p-3">Mapa / Placa</th>
-                            <th className="p-3 text-center">Tipo</th>
-                            <th className="p-3">Código Item</th>
-                            <th className="p-3">Descrição do Item</th>
-                            <th className="p-3 text-center">Unid.</th>
-                            <th className="p-3 text-center">Fiscal / Físico</th>
-                            <th className="p-3 text-right">Desvio (Qtd)</th>
-                            <th className="p-3 text-right">Valor Total (R$)</th>
-                            <th className="p-3 text-center">Status</th>
-                            <th className="p-3 text-center">Ações</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 font-sans">
-                          {getUnresolvedDiscrepancyRecords().map((rec, index) => {
-                            const isSobra = rec.deviationType === 'SOBRA';
-                            const matchingAudit = audits.find(a => normalizeMapCode(a.routeMap).toUpperCase() === normalizeMapCode(rec.map).toUpperCase());
-                            
-                            return (
-                              <tr key={`${rec.map}_${rec.itemCode}_${index}`} className="hover:bg-amber-50/40 transition">
-                                <td className="p-3 font-mono text-[11px] text-slate-600 whitespace-nowrap">
-                                  {rec.arrivalDate ? new Date(rec.arrivalDate + 'T00:00:00').toLocaleDateString('pt-BR') : '---'}
-                                </td>
-                                <td className="p-3 font-medium text-slate-900 max-w-[160px] truncate" title={rec.driverName}>
-                                  {rec.driverName}
-                                </td>
-                                <td className="p-3 whitespace-nowrap">
-                                  <div className="font-mono font-bold text-slate-900">Mapa {rec.map}</div>
-                                  <div className="font-mono text-[10px] text-slate-400">{rec.plate}</div>
-                                </td>
-                                <td className="p-3 text-center whitespace-nowrap">
-                                  <span className={`px-2 py-0.5 rounded text-[10px] font-black font-mono ${
-                                    rec.type === 'PA' 
-                                      ? 'bg-amber-100 text-amber-900 border border-amber-300' 
-                                      : 'bg-blue-100 text-blue-900 border border-blue-300'
-                                  }`}>
-                                    {rec.type}
+                    <div className="space-y-6">
+                      {(() => {
+                        const records = getUnresolvedDiscrepancyRecords();
+                        // Group records by Map
+                        const mapGroups = new Map<string, {
+                          map: string;
+                          plate: string;
+                          driverName: string;
+                          arrivalDate: string;
+                          matchingAudit: AuditSession | undefined;
+                          faltas: typeof records;
+                          sobras: typeof records;
+                          totalFaltasVal: number;
+                          totalFaltasQty: number;
+                          totalSobrasVal: number;
+                          totalSobrasQty: number;
+                          saldoVal: number;
+                        }>();
+
+                        records.forEach(r => {
+                          const key = r.map ? normalizeMapCode(r.map).toUpperCase() : 'AVULSO';
+                          if (!mapGroups.has(key)) {
+                            const matchAudit = audits.find(a => normalizeMapCode(a.routeMap).toUpperCase() === key);
+                            let dName = r.driverName;
+                            if (!dName || /^\d+$/.test(dName.trim())) {
+                              dName = getDriverName(matchAudit?.driverId, key);
+                            }
+                            mapGroups.set(key, {
+                              map: key,
+                              plate: r.plate || matchAudit?.plate || '---',
+                              driverName: dName || 'Motorista',
+                              arrivalDate: r.arrivalDate || matchAudit?.arrivalDate || '',
+                              matchingAudit: matchAudit,
+                              faltas: [],
+                              sobras: [],
+                              totalFaltasVal: 0,
+                              totalFaltasQty: 0,
+                              totalSobrasVal: 0,
+                              totalSobrasQty: 0,
+                              saldoVal: 0
+                            });
+                          }
+
+                          const grp = mapGroups.get(key)!;
+                          if (r.deviationType === 'FALTA') {
+                            grp.faltas.push(r);
+                            grp.totalFaltasQty += Math.abs(r.divergence);
+                            grp.totalFaltasVal += (r.totalValue || 0);
+                          } else {
+                            grp.sobras.push(r);
+                            grp.totalSobrasQty += r.divergence;
+                            grp.totalSobrasVal += (r.totalValue || 0);
+                          }
+                          grp.saldoVal = grp.totalSobrasVal - grp.totalFaltasVal;
+                        });
+
+                        const sortedGroups = Array.from(mapGroups.values()).sort((a, b) => {
+                          const dateA = a.arrivalDate || '';
+                          const dateB = b.arrivalDate || '';
+                          if (dateA !== dateB) return dateB.localeCompare(dateA);
+                          return a.map.localeCompare(b.map, undefined, { numeric: true });
+                        });
+
+                        return sortedGroups.map((group) => {
+                          const isPositivo = group.saldoVal >= 0;
+                          return (
+                            <div key={group.map} className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden transition hover:border-slate-300">
+                              {/* Map Card Header with Driver prominently visible */}
+                              <div className="bg-slate-50/90 px-4 py-3.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                                <div className="flex items-center space-x-3">
+                                  <span className="font-mono font-black text-sm text-slate-900 bg-white px-2.5 py-1 rounded-lg border border-slate-300 shadow-2xs">
+                                    Mapa {group.map}
                                   </span>
-                                </td>
-                                <td className="p-3 font-mono font-bold text-slate-700 whitespace-nowrap">
-                                  {rec.itemCode}
-                                </td>
-                                <td className="p-3 font-medium text-slate-800 max-w-[220px] truncate" title={rec.itemDescription}>
-                                  {rec.itemDescription}
-                                </td>
-                                <td className="p-3 text-center font-mono text-slate-500 font-bold uppercase">
-                                  {rec.unit || (rec.type === 'PA' ? 'CX' : 'UN')}
-                                </td>
-                                <td className="p-3 text-center font-mono text-slate-600 whitespace-nowrap">
-                                  {rec.fiscalQty} / <strong className="text-slate-900">{rec.physicalQty}</strong>
-                                </td>
-                                <td className="p-3 text-right font-mono whitespace-nowrap">
-                                  <span className={`inline-block px-2 py-0.5 rounded font-black text-xs ${
-                                    isSobra 
-                                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' 
-                                      : 'bg-red-100 text-red-800 border border-red-300'
-                                  }`}>
-                                    {isSobra ? `+${rec.divergence}` : rec.divergence}
+                                  <span className="font-mono text-xs text-slate-500 bg-slate-200/60 px-2 py-0.5 rounded">
+                                    {group.plate}
                                   </span>
-                                </td>
-                                <td className="p-3 text-right font-mono font-bold text-slate-900 whitespace-nowrap">
-                                  R$ {(rec.totalValue || 0).toFixed(2)}
-                                </td>
-                                <td className="p-3 text-center whitespace-nowrap">
-                                  <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${
-                                    rec.status.includes('Concluído') || rec.status.includes('Enviado') || rec.status.includes('Baixado')
-                                      ? 'bg-emerald-100 text-emerald-800'
-                                      : rec.status.includes('Vale')
-                                        ? 'bg-purple-100 text-purple-800'
-                                        : 'bg-amber-100 text-amber-900'
-                                  }`}>
-                                    {rec.status}
+                                  <span className="text-xs text-slate-500 font-mono">
+                                    📅 {group.arrivalDate ? formatDateBR(group.arrivalDate) : '---'}
                                   </span>
-                                </td>
-                                <td className="p-3 text-center whitespace-nowrap">
-                                  {matchingAudit ? (
+                                </div>
+
+                                <div className="text-xs text-slate-700 font-sans">
+                                  Motorista Responsável: <strong className="text-slate-900 font-bold uppercase">{group.driverName}</strong>
+                                </div>
+
+                                <div className="flex items-center space-x-2">
+                                  {group.totalFaltasQty > 0 && (
+                                    <span className="text-[11px] font-black font-mono px-2 py-0.5 rounded-lg bg-red-100 text-red-800 border border-red-200">
+                                      Faltas: -{group.totalFaltasQty} vol. (R$ {group.totalFaltasVal.toFixed(2)})
+                                    </span>
+                                  )}
+                                  {group.totalSobrasQty > 0 && (
+                                    <span className="text-[11px] font-black font-mono px-2 py-0.5 rounded-lg bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                      Sobras: +{group.totalSobrasQty} vol. (R$ {group.totalSobrasVal.toFixed(2)})
+                                    </span>
+                                  )}
+                                  <span className={`text-[11px] font-black font-mono px-2 py-0.5 rounded-lg border ${
+                                    isPositivo ? 'bg-amber-50 text-amber-900 border-amber-200' : 'bg-rose-50 text-rose-800 border-rose-200'
+                                  }`}>
+                                    Saldo: R$ {group.saldoVal.toFixed(2)}
+                                  </span>
+                                  {group.matchingAudit && (
                                     <button
                                       type="button"
-                                      onClick={() => {
-                                        setActiveSession(matchingAudit);
-                                      }}
-                                      className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-white font-bold text-[10px] rounded-lg transition shadow-xs cursor-pointer"
+                                      onClick={() => setActiveSession(group.matchingAudit!)}
+                                      className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-white font-bold text-[10px] uppercase rounded-lg transition shadow-xs cursor-pointer ml-1"
                                     >
                                       Abrir Mapa
                                     </button>
-                                  ) : (
-                                    <span className="text-[10px] text-slate-400 italic">Histórico</span>
                                   )}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                                </div>
+                              </div>
+
+                              <div className="p-4 space-y-4">
+                                {/* TABELA DE FALTAS DO MAPA */}
+                                {filterType !== 'sobra' && (
+                                  <div className="space-y-1.5">
+                                    <div className="flex items-center justify-between px-1">
+                                      <h5 className="text-[11px] font-black uppercase text-red-700 tracking-wider flex items-center space-x-1.5">
+                                        <ArrowDownCircle className="h-4 w-4 text-red-600" />
+                                        <span>Faltas no Veículo ({group.faltas.length} itens • R$ {group.totalFaltasVal.toFixed(2)})</span>
+                                      </h5>
+                                    </div>
+                                    {group.faltas.length === 0 ? (
+                                      <div className="text-xxs text-slate-400 italic bg-slate-50 px-3 py-2 rounded-lg border border-slate-100">
+                                        ✓ Nenhuma falta identificada na conferência física deste mapa.
+                                      </div>
+                                    ) : (
+                                      <div className="overflow-x-auto rounded-xl border border-red-200">
+                                        <table className="w-full text-left text-xs border-collapse bg-white">
+                                          <thead>
+                                            <tr className="bg-red-50/80 text-[10px] font-extrabold uppercase text-red-800 border-b border-red-200">
+                                              <th className="p-2.5">Código</th>
+                                              <th className="p-2.5">Descrição do Item com Falta</th>
+                                              <th className="p-2.5 text-center">Tipo</th>
+                                              <th className="p-2.5 text-center">Unid.</th>
+                                              <th className="p-2.5 text-center">Fiscal / Físico</th>
+                                              <th className="p-2.5 text-right">Diferença (Falta)</th>
+                                              <th className="p-2.5 text-right">Valor Total (R$)</th>
+                                              <th className="p-2.5 text-center">Status</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody className="divide-y divide-red-50 font-sans">
+                                            {group.faltas.map((rec, idx) => (
+                                              <tr key={`f_${group.map}_${rec.itemCode}_${idx}`} className="hover:bg-red-50/30 transition">
+                                                <td className="p-2.5 font-mono font-bold text-slate-700 whitespace-nowrap">{rec.itemCode}</td>
+                                                <td className="p-2.5 font-medium text-slate-800 max-w-[260px] truncate" title={rec.itemDescription}>{rec.itemDescription}</td>
+                                                <td className="p-2.5 text-center whitespace-nowrap">
+                                                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-black font-mono ${rec.type === 'PA' ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-blue-100 text-blue-900 border border-blue-300'}`}>
+                                                    {rec.type}
+                                                  </span>
+                                                </td>
+                                                <td className="p-2.5 text-center font-mono text-slate-500 font-bold uppercase">{rec.unit}</td>
+                                                <td className="p-2.5 text-center font-mono text-slate-600 whitespace-nowrap">{rec.fiscalQty} / <strong className="text-slate-900">{rec.physicalQty}</strong></td>
+                                                <td className="p-2.5 text-right font-mono font-black text-red-700 whitespace-nowrap">{rec.divergence} {rec.unit}</td>
+                                                <td className="p-2.5 text-right font-mono font-bold text-red-800 whitespace-nowrap">R$ {(rec.totalValue || 0).toFixed(2)}</td>
+                                                <td className="p-2.5 text-center whitespace-nowrap">
+                                                  <span className="px-2 py-0.5 rounded-full text-[9px] font-bold uppercase bg-red-100 text-red-800">
+                                                    {rec.status}
+                                                  </span>
+                                                </td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                          <tfoot>
+                                            <tr className="bg-red-50/50 font-bold text-xs border-t border-red-200">
+                                              <td colSpan={5} className="p-2 text-red-900 uppercase text-[10px]">Subtotal Faltas:</td>
+                                              <td className="p-2 text-right font-mono text-red-700">-{group.totalFaltasQty} vol.</td>
+                                              <td className="p-2 text-right font-mono text-red-800">R$ {group.totalFaltasVal.toFixed(2)}</td>
+                                              <td></td>
+                                            </tr>
+                                          </tfoot>
+                                        </table>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* TABELA DE SOBRAS DO MAPA */}
+                                {filterType !== 'falta' && (
+                                  <div className="space-y-1.5">
+                                    <div className="flex items-center justify-between px-1">
+                                      <h5 className="text-[11px] font-black uppercase text-emerald-700 tracking-wider flex items-center space-x-1.5">
+                                        <ArrowUpCircle className="h-4 w-4 text-emerald-600" />
+                                        <span>Sobras no Veículo ({group.sobras.length} itens • R$ {group.totalSobrasVal.toFixed(2)})</span>
+                                      </h5>
+                                    </div>
+                                    {group.sobras.length === 0 ? (
+                                      <div className="text-xxs text-slate-400 italic bg-slate-50 px-3 py-2 rounded-lg border border-slate-100">
+                                        ✓ Nenhuma sobra identificada na conferência física deste mapa.
+                                      </div>
+                                    ) : (
+                                      <div className="overflow-x-auto rounded-xl border border-emerald-200">
+                                        <table className="w-full text-left text-xs border-collapse bg-white">
+                                          <thead>
+                                            <tr className="bg-emerald-50/80 text-[10px] font-extrabold uppercase text-emerald-800 border-b border-emerald-200">
+                                              <th className="p-2.5">Código</th>
+                                              <th className="p-2.5">Descrição do Item Sobrante</th>
+                                              <th className="p-2.5 text-center">Tipo</th>
+                                              <th className="p-2.5 text-center">Unid.</th>
+                                              <th className="p-2.5 text-center">Fiscal / Físico</th>
+                                              <th className="p-2.5 text-right">Diferença (Sobra)</th>
+                                              <th className="p-2.5 text-right">Valor Estimado (R$)</th>
+                                              <th className="p-2.5 text-center">Status</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody className="divide-y divide-emerald-50 font-sans">
+                                            {group.sobras.map((rec, idx) => (
+                                              <tr key={`s_${group.map}_${rec.itemCode}_${idx}`} className="hover:bg-emerald-50/30 transition">
+                                                <td className="p-2.5 font-mono font-bold text-slate-700 whitespace-nowrap">{rec.itemCode}</td>
+                                                <td className="p-2.5 font-medium text-slate-800 max-w-[260px] truncate" title={rec.itemDescription}>{rec.itemDescription}</td>
+                                                <td className="p-2.5 text-center whitespace-nowrap">
+                                                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-black font-mono ${rec.type === 'PA' ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-blue-100 text-blue-900 border border-blue-300'}`}>
+                                                    {rec.type}
+                                                  </span>
+                                                </td>
+                                                <td className="p-2.5 text-center font-mono text-slate-500 font-bold uppercase">{rec.unit}</td>
+                                                <td className="p-2.5 text-center font-mono text-slate-600 whitespace-nowrap">{rec.fiscalQty} / <strong className="text-slate-900">{rec.physicalQty}</strong></td>
+                                                <td className="p-2.5 text-right font-mono font-black text-emerald-700 whitespace-nowrap">+{rec.divergence} {rec.unit}</td>
+                                                <td className="p-2.5 text-right font-mono font-bold text-emerald-800 whitespace-nowrap">R$ {(rec.totalValue || 0).toFixed(2)}</td>
+                                                <td className="p-2.5 text-center whitespace-nowrap">
+                                                  <span className="px-2 py-0.5 rounded-full text-[9px] font-bold uppercase bg-emerald-100 text-emerald-800">
+                                                    {rec.status}
+                                                  </span>
+                                                </td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                          <tfoot>
+                                            <tr className="bg-emerald-50/50 font-bold text-xs border-t border-emerald-200">
+                                              <td colSpan={5} className="p-2 text-emerald-900 uppercase text-[10px]">Subtotal Sobras:</td>
+                                              <td className="p-2 text-right font-mono text-emerald-700">+{group.totalSobrasQty} vol.</td>
+                                              <td className="p-2 text-right font-mono text-emerald-800">R$ {group.totalSobrasVal.toFixed(2)}</td>
+                                              <td></td>
+                                            </tr>
+                                          </tfoot>
+                                        </table>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()}
                     </div>
                   )}
                 </div>
@@ -9371,7 +10671,7 @@ export default function FiscalView({
                     const filteredAudits = discrepantAudits.filter(audit => {
                       if (filterNB.trim()) {
                         const nbQuery = filterNB.trim().toLowerCase();
-                        const driverName = getDriverName(audit.driverId).toLowerCase();
+                        const driverName = getDriverName(audit.driverId, audit.routeMap).toLowerCase();
                         const hasMatched = (audit.clientCodeNB || '').toLowerCase().includes(nbQuery) ||
                           (audit.routeMap || '').toLowerCase().includes(nbQuery) ||
                           (audit.plate || '').toLowerCase().includes(nbQuery) ||
@@ -9565,7 +10865,7 @@ export default function FiscalView({
                                 <span className="text-xxs text-slate-400 font-mono">Data: {new Date(audit.arrivalDate + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
                               </div>
                               <div className="text-xxs text-slate-500 mt-1">
-                                Motorista: <strong>{getDriverName(audit.driverId)}</strong>
+                                Motorista: <strong className="text-slate-800">{getDriverName(audit.driverId, audit.routeMap)}</strong>
                               </div>
                             </div>
 
@@ -9857,19 +11157,39 @@ export default function FiscalView({
                     </p>
                   </div>
 
-                  {/* PROMINENT TOP PDF BUTTON */}
-                  <div className="flex items-center gap-2.5 flex-wrap shrink-0">
+                  {/* PROMINENT TOP PDF BUTTONS (SEPARATED PA, AG AND GENERAL CONSOLIDATED) */}
+                  <div className="flex items-center gap-2 flex-wrap shrink-0">
                     <button
                       type="button"
-                      onClick={() => exportValesSummaryPDF(filteredVales)}
-                      className="bg-red-700 hover:bg-red-800 active:bg-red-900 text-white font-black text-xs sm:text-sm px-4 py-2.5 rounded-xl transition shadow-md hover:shadow-lg flex items-center gap-2 cursor-pointer border border-red-800"
-                      title="Exportar Relatório Analítico Consolidado de Vales em PDF com demonstrativo completo de P.A. e A.G. para as datas filtradas"
+                      onClick={() => exportValesSummaryPDF(filteredVales, 'TODOS')}
+                      className="bg-red-700 hover:bg-red-800 active:bg-red-900 text-white font-black text-xs sm:text-sm px-3.5 py-2 rounded-xl transition shadow-md hover:shadow-lg flex items-center gap-2 cursor-pointer border border-red-800"
+                      title="Exportar Relatório Analítico Consolidado de Vales em PDF com demonstrativo completo de P.A. e A.G."
                     >
                       <FileText className="h-4 w-4" />
-                      <span>Relatório PDF Geral (P.A. e A.G.)</span>
+                      <span>Relatório Geral (P.A. & A.G.)</span>
                       <span className="bg-red-900/80 text-white text-[10px] font-mono font-bold px-2 py-0.5 rounded-full">
-                        {filteredVales.length} {filteredVales.length === 1 ? 'Vale' : 'Vales'}
+                        {filteredVales.length}
                       </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => exportValesSummaryPDF(filteredVales, 'PA')}
+                      className="bg-blue-700 hover:bg-blue-800 active:bg-blue-900 text-white font-black text-xs sm:text-sm px-3.5 py-2 rounded-xl transition shadow-md hover:shadow-lg flex items-center gap-2 cursor-pointer border border-blue-800"
+                      title="Exportar Relatório Exclusivo de Faltas de Produtos Acabados (P.A. - Bebidas) em PDF"
+                    >
+                      <FileText className="h-4 w-4" />
+                      <span>Relatório Só P.A.</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => exportValesSummaryPDF(filteredVales, 'AG')}
+                      className="bg-purple-700 hover:bg-purple-800 active:bg-purple-900 text-white font-black text-xs sm:text-sm px-3.5 py-2 rounded-xl transition shadow-md hover:shadow-lg flex items-center gap-2 cursor-pointer border border-purple-800"
+                      title="Exportar Relatório Exclusivo de Faltas de Ativos de Giro (A.G. - Vasilhames/Caixas) em PDF"
+                    >
+                      <FileText className="h-4 w-4" />
+                      <span>Relatório Só A.G.</span>
                     </button>
                   </div>
                 </div>
@@ -9901,54 +11221,24 @@ export default function FiscalView({
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
-                    {/* Dia Específico */}
-                    <div className="md:col-span-4 space-y-1">
-                      <label className="block text-[10px] font-bold text-slate-600 uppercase font-sans">
-                        Filtrar Dia Específico
-                      </label>
-                      <input
-                        type="date"
-                        value={valesFilterDate}
-                        onChange={(e) => {
-                          setValesFilterDate(e.target.value);
-                          if (e.target.value) {
+                    {/* Single Unified Calendar Picker */}
+                    <div className="md:col-span-10 space-y-1">
+                      <UnifiedCalendarPicker
+                        label="Filtro Calendariado dos Vales (Dia Único com 2 cliques ou Período entre Datas)"
+                        startDate={valesFilterStartDate || valesFilterDate}
+                        endDate={valesFilterEndDate || valesFilterDate}
+                        onChange={(start, end) => {
+                          if (start === end) {
+                            setValesFilterDate(start);
                             setValesFilterStartDate('');
                             setValesFilterEndDate('');
+                          } else {
+                            setValesFilterDate('');
+                            setValesFilterStartDate(start);
+                            setValesFilterEndDate(end);
                           }
                         }}
-                        className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 transition font-mono"
-                      />
-                    </div>
-
-                    {/* Data Inicial (De) */}
-                    <div className="md:col-span-3 space-y-1">
-                      <label className="block text-[10px] font-bold text-slate-600 uppercase font-sans">
-                        Período: De (Data Inicial)
-                      </label>
-                      <input
-                        type="date"
-                        value={valesFilterStartDate}
-                        onChange={(e) => {
-                          setValesFilterStartDate(e.target.value);
-                          if (e.target.value) setValesFilterDate('');
-                        }}
-                        className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 transition font-mono"
-                      />
-                    </div>
-
-                    {/* Data Final (Até) */}
-                    <div className="md:col-span-3 space-y-1">
-                      <label className="block text-[10px] font-bold text-slate-600 uppercase font-sans">
-                        Período: Até (Data Final)
-                      </label>
-                      <input
-                        type="date"
-                        value={valesFilterEndDate}
-                        onChange={(e) => {
-                          setValesFilterEndDate(e.target.value);
-                          if (e.target.value) setValesFilterDate('');
-                        }}
-                        className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 transition font-mono"
+                        variant="amber"
                       />
                     </div>
 
@@ -10882,15 +12172,35 @@ export default function FiscalView({
                       </div>
 
                       <div className="flex items-center gap-2 flex-wrap">
-                        {/* Botão Oficial de Exportação de Relatório PDF Consolidado */}
+                        {/* Botões de Exportação Segregada de Vales */}
                         <button
                           type="button"
-                          onClick={() => exportValesSummaryPDF(filteredVales)}
-                          className="bg-red-700 hover:bg-red-800 text-white font-extrabold text-xs px-3.5 py-2 rounded-lg transition shadow-xs flex items-center gap-1.5 cursor-pointer shrink-0"
-                          title="Exportar Relatório Analítico Consolidado de Vales em PDF com demonstrativo completo de P.A. e A.G."
+                          onClick={() => exportValesSummaryPDF(filteredVales, 'TODOS')}
+                          className="bg-red-700 hover:bg-red-800 text-white font-extrabold text-xs px-3 py-1.5 rounded-lg transition shadow-xs flex items-center gap-1.5 cursor-pointer shrink-0"
+                          title="Exportar Relatório Consolidado (P.A. & A.G.)"
                         >
                           <FileText className="h-3.5 w-3.5" />
-                          <span>Relatório PDF (P.A. e A.G.)</span>
+                          <span>PDF Geral</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => exportValesSummaryPDF(filteredVales, 'PA')}
+                          className="bg-blue-700 hover:bg-blue-800 text-white font-extrabold text-xs px-3 py-1.5 rounded-lg transition shadow-xs flex items-center gap-1.5 cursor-pointer shrink-0"
+                          title="Exportar Relatório Somente P.A."
+                        >
+                          <FileText className="h-3.5 w-3.5" />
+                          <span>PDF P.A.</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => exportValesSummaryPDF(filteredVales, 'AG')}
+                          className="bg-purple-700 hover:bg-purple-800 text-white font-extrabold text-xs px-3 py-1.5 rounded-lg transition shadow-xs flex items-center gap-1.5 cursor-pointer shrink-0"
+                          title="Exportar Relatório Somente A.G."
+                        >
+                          <FileText className="h-3.5 w-3.5" />
+                          <span>PDF A.G.</span>
                         </button>
 
                         <span className="text-xxs bg-slate-100 text-slate-700 font-mono px-2.5 py-1.5 rounded-lg font-black border border-slate-200 shrink-0">

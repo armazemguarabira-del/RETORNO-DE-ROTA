@@ -634,17 +634,67 @@ export default function App() {
 
   const cleanVales = (list: Vale[]): Vale[] => {
     if (!list || !Array.isArray(list)) return [];
-    return list.map(v => {
-      if (!v) return v;
+    
+    // Deduplicate identical vale emissions and sanitize
+    const seenIds = new Set<string>();
+    const seenMapAndDate = new Map<string, Vale>();
+    const result: Vale[] = [];
+
+    // Sort by id descending so the newest/most complete record is preserved
+    const sorted = [...list].filter(Boolean).sort((a, b) => (b.id || '').localeCompare(a.id || ''));
+
+    for (const v of sorted) {
+      if (!v || !v.id) continue;
+      // Filter out dummy/seed records, undefined maps, or empty 0-value placeholders (user circled items)
+      if (v.id === 'vale_seed' || v.id.includes('seed')) continue;
+      if (v.routeMap === 'undefined' || v.routeMap === 'null') continue;
+      if (seenIds.has(v.id)) continue;
+      seenIds.add(v.id);
+
       const numValor = typeof v.valor === 'number' && !isNaN(v.valor) ? v.valor : (parseFloat(String(v.valor || 0)) || 0);
+      // Discard empty zero-value vales that have no route map or have zero value
+      if (numValor <= 0 && (!v.routeMap || v.routeMap === '')) continue;
       const numColabValor = v.colaboradorValor !== undefined ? (typeof v.colaboradorValor === 'number' && !isNaN(v.colaboradorValor) ? v.colaboradorValor : (parseFloat(String(v.colaboradorValor || 0)) || 0)) : undefined;
-      return {
+      const cleanMap = v.routeMap ? normalizeMapCode(v.routeMap) : undefined;
+      const cleanDate = v.dataGeracao || '';
+
+      // Check if driver name is just digits or matricula, try to enrich from drivers list
+      let driverName = v.colaboradorName || '';
+      if (!driverName || /^\d+$/.test(driverName.trim())) {
+        const foundDriver = drivers.find(d => d.id === v.colaboradorId || d.id === driverName.trim());
+        if (foundDriver && foundDriver.name) {
+          driverName = foundDriver.name;
+        } else {
+          const foundRoute = importedRoutes.find(r => cleanMap && normalizeMapCode(r.routeMap) === cleanMap);
+          if (foundRoute && foundRoute.driverName && !/^\d+$/.test(foundRoute.driverName.trim())) {
+            driverName = foundRoute.driverName;
+          }
+        }
+      }
+
+      // Check duplicate vale for the exact same map and date with identical or subtotal value
+      if (cleanMap && cleanMap !== 'AVULSO' && cleanDate) {
+        const key = `${cleanMap.toUpperCase()}_${cleanDate}`;
+        const existing = seenMapAndDate.get(key);
+        if (existing) {
+          // If existing vale for this map already has the same or higher value, skip duplicate duplicate creation
+          if (existing.valor >= numValor) {
+            continue;
+          }
+        }
+        seenMapAndDate.set(key, { ...v, valor: numValor });
+      }
+
+      result.push({
         ...v,
         valor: numValor,
+        colaboradorName: driverName || v.colaboradorName || 'Motorista',
         colaboradorValor: numColabValor,
-        routeMap: v.routeMap ? normalizeMapCode(v.routeMap) : undefined
-      };
-    }).filter(Boolean);
+        routeMap: cleanMap
+      });
+    }
+
+    return result.reverse();
   };
 
   const cleanReturnForecasts = (list: ReturnForecast[]): ReturnForecast[] => {

@@ -800,6 +800,19 @@ export default function ConferenteView({
       }));
     }
 
+    // Ensure items and assets preserve first count as rePhysicalQty if in reconferencia
+    let initialItems = audit.items || [];
+    if (audit.status === 'reconferencia') {
+      initialItems = initialItems.map(item => ({
+        ...item,
+        rePhysicalQty: item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty
+      }));
+      initialAssets = initialAssets.map(asset => ({
+        ...asset,
+        rePhysicalQty: asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty
+      }));
+    }
+
     // Calculate accumulated elapsed duration from previous session run if active
     let accumulatedMs = audit.totalCountingDurationMs || 0;
     if (!audit.isSuspended && audit.lastTimerStart) {
@@ -812,6 +825,7 @@ export default function ConferenteView({
     // If already suspended, don't start ticking. Else, tick starting now.
     const updatedSession: AuditSession = {
       ...audit,
+      items: initialItems,
       lastTimerStart: audit.isSuspended ? undefined : nowStr,
       totalCountingDurationMs: accumulatedMs,
       exchanges: initialExchanges,
@@ -1143,6 +1157,20 @@ export default function ConferenteView({
     // Check if any map in finalRouteMap or unifiedMaps already has an active or reconferência session
     const targetMaps = unifiedMaps && unifiedMaps.length > 0 ? unifiedMaps : [finalRouteMap];
     const targetMapsUpper = targetMaps.map(m => m.trim().toUpperCase());
+
+    // Prevent restarting a conference on a map that is already finalized and closed (without re-opening request)
+    const isAlreadyClosed = audits.some(a => {
+      const normA = normalizeMapCode(a.routeMap).toUpperCase();
+      const isMatch = normA === finalRouteMap.toUpperCase() ||
+        targetMapsUpper.some(m => normA === normalizeMapCode(m).toUpperCase() || (a.unifiedMaps && a.unifiedMaps.map(normalizeMapCode).map(u => u.toUpperCase()).includes(normalizeMapCode(m).toUpperCase())));
+      if (!isMatch) return false;
+      return (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') && !a.reopeningRequested;
+    });
+
+    if (isAlreadyClosed) {
+      alert(`Aviso: O mapa ${finalRouteMap} já foi finalizado e baixado fiscalmente. Para realizar uma nova conferência física, é necessário que a Auxiliar de Armazém/Gestor reabra o mapa.`);
+      return;
+    }
 
     const existingActiveSession = audits.find(a => 
       a.routeMap.toUpperCase() === finalRouteMap.toUpperCase() && 
@@ -2584,7 +2612,9 @@ export default function ConferenteView({
         return {
           ...routeItem,
           physicalQty: checkerItem.physicalQty ?? 0,
-          rePhysicalQty: checkerItem.rePhysicalQty
+          rePhysicalQty: (session.status === 'reconferencia' || session.status === 'recontagem_finalizada')
+            ? (checkerItem.rePhysicalQty !== undefined ? checkerItem.rePhysicalQty : checkerItem.physicalQty)
+            : checkerItem.rePhysicalQty
         };
       }
       return routeItem;
@@ -3896,8 +3926,8 @@ export default function ConferenteView({
                                     type="number"
                                     min="0"
                                     placeholder="Informe o recount..."
-                                    value={item.rePhysicalQty ?? ''}
-                                    onChange={(e) => handleUpdateProductQty(item.productCode, Number(e.target.value) || 0)}
+                                    value={item.rePhysicalQty !== undefined ? item.rePhysicalQty : (item.physicalQty ?? '')}
+                                    onChange={(e) => handleUpdateProductQty(item.productCode, e.target.value === '' ? 0 : Number(e.target.value))}
                                     className="w-full text-xs bg-white border border-red-300 rounded-lg p-2.5 text-center font-bold focus:outline-none focus:ring-2 focus:ring-red-500 font-sans"
                                     id={`pa-mobile-recount-${item.productCode}`}
                                   />
@@ -3969,8 +3999,8 @@ export default function ConferenteView({
                                     type="number"
                                     min="0"
                                     placeholder="Recount"
-                                    value={item.rePhysicalQty ?? ''}
-                                    onChange={(e) => handleUpdateProductQty(item.productCode, Number(e.target.value) || 0)}
+                                    value={item.rePhysicalQty !== undefined ? item.rePhysicalQty : (item.physicalQty ?? '')}
+                                    onChange={(e) => handleUpdateProductQty(item.productCode, e.target.value === '' ? 0 : Number(e.target.value))}
                                     className="w-20 text-xs bg-white border border-red-200 rounded p-1 text-center font-bold focus:outline-none focus:ring-1 focus:ring-red-500 font-sans"
                                     id={`pa-desktop-recount-${item.productCode}`}
                                   />
@@ -4556,7 +4586,7 @@ export default function ConferenteView({
                               min="0"
                               value={
                                 activeSession.status === 'reconferencia'
-                                  ? (asset.rePhysicalQty === undefined || asset.rePhysicalQty === 0 ? '' : asset.rePhysicalQty)
+                                  ? (asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : (asset.physicalQty ?? 0))
                                   : (asset.physicalQty === 0 ? '' : asset.physicalQty)
                               }
                               onChange={(e) => handleUpdateAssetQty(asset.assetId, e.target.value === '' ? 0 : Number(e.target.value))}
