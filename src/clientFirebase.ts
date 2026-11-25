@@ -311,6 +311,7 @@ function markSyncSuccess() {
 // limpo, etc.), isAuthenticated ficava `true` para sempre e nada tentava se
 // autenticar de novo.
 let authStateListenerAttached = false;
+let anonymousAuthUnsupported = false;
 
 function attachAuthStateListener() {
   if (authStateListenerAttached || typeof window === "undefined") return;
@@ -319,17 +320,19 @@ function attachAuthStateListener() {
     const authRef = getAuth();
     onAuthStateChanged(authRef, (user) => {
       if (user) {
-        const wasUnauthenticated = !isAuthenticated;
         isAuthenticated = true;
         isAuthenticating = false;
         clientAuthError = null;
-        if (wasUnauthenticated) {
+        if (hasClientPermissionError) {
+          hasClientPermissionError = false;
+          window.dispatchEvent(new Event('client_firestore_permission_restored'));
           window.dispatchEvent(new CustomEvent('firestore_request_reattach'));
         }
       } else {
-        console.warn("[ClientFirebase] Sessão de autenticação perdida. Tentando reautenticar...");
         isAuthenticated = false;
-        triggerAnonymousAuth();
+        if (!anonymousAuthUnsupported) {
+          triggerAnonymousAuth();
+        }
       }
     });
   } catch (e) {
@@ -353,6 +356,7 @@ export function getFirebaseConnectionState(): 'connected' | 'connecting' | 'disc
 function triggerAnonymousAuth() {
   attachAuthStateListener();
 
+  if (anonymousAuthUnsupported) return;
   const now = Date.now();
   if (now - lastAuthAttemptTime < AUTH_COOLDOWN_MS) return;
 
@@ -375,6 +379,9 @@ function triggerAnonymousAuth() {
         const errCode = err.code || err.message || "unknown";
         clientAuthError = errCode;
         isAuthenticating = false;
+        if (errCode === "auth/operation-not-allowed" || errCode === "auth/admin-restricted-operation") {
+          anonymousAuthUnsupported = true;
+        }
       });
   } catch (e) {
     clientAuthError = "get_auth_failed";
@@ -768,28 +775,100 @@ export async function saveDocsToFirestore(colName: string, items: any[], syncDel
   }
 }
 
+export async function saveTargetedBatchToFirestore(
+  operations: Array<{ colName: string; item: any }>,
+  timeoutMs: number = 6000
+): Promise<{ ok: boolean; syncedToServer: boolean }> {
+  const db = getClientFirestore();
+  if (!db || !operations || operations.length === 0) {
+    return { ok: false, syncedToServer: false };
+  }
+
+  const preparedOps = operations
+    .filter(op => op && op.colName && op.item)
+    .map(op => {
+      const targetCol = COLLECTION_MAP[op.colName] || op.colName;
+      const cleanItem = JSON.parse(JSON.stringify(op.item));
+      const docId = getDocIdForCollection(targetCol, cleanItem);
+      cleanItem.id = docId;
+      return {
+        targetCol,
+        docId,
+        data: cleanItem,
+        json: canonicalJson(cleanItem)
+      };
+    });
+
+  if (preparedOps.length === 0) {
+    return { ok: true, syncedToServer: true };
+  }
+
+  let settled = false;
+
+  const commitWork = async (): Promise<{ ok: boolean; syncedToServer: boolean }> => {
+    try {
+      const batchSize = 400;
+      for (let i = 0; i < preparedOps.length; i += batchSize) {
+        const chunk = preparedOps.slice(i, i + batchSize);
+        const batch = writeBatch(db);
+        chunk.forEach(op => {
+          const docRef = doc(db, op.targetCol, op.docId);
+          batch.set(docRef, op.data, { merge: true });
+        });
+        await batch.commit();
+
+        chunk.forEach(op => {
+          getColCache(op.targetCol).set(op.docId, op.json);
+        });
+      }
+      markSyncSuccess();
+      settled = true;
+      return { ok: true, syncedToServer: true };
+    } catch (err) {
+      console.warn("[ClientFirebase] Erro no commit em lote direcionado:", err);
+      if (isPermissionError(err)) checkPermissionError(err);
+      if (isQuotaError(err)) checkQuotaError(err);
+      settled = true;
+      return { ok: false, syncedToServer: false };
+    }
+  };
+
+  const timeoutGuard = new Promise<{ ok: boolean; syncedToServer: boolean }>((resolve) => {
+    setTimeout(() => {
+      if (!settled) {
+        console.warn("[ClientFirebase] Timeout aguardando confirmação do servidor; gravação seguirá em fila local.");
+        resolve({ ok: true, syncedToServer: false });
+      }
+    }, timeoutMs);
+  });
+
+  return Promise.race([commitWork(), timeoutGuard]);
+}
+
 export async function saveDirectlyToFirestore(payload: any, forceWrite: boolean = false, syncDeletions: boolean = true): Promise<boolean> {
   const db = getClientFirestore();
   if (!db || !payload) return false;
   try {
     const savePromise = (async () => {
       const keys = Object.keys(payload);
-      for (const key of keys) {
-        const colName = COLLECTION_MAP[key] || key;
-        const rawData = payload[key];
-        if (rawData === undefined) continue;
+      await Promise.all(
+        keys.map(async (key) => {
+          const colName = COLLECTION_MAP[key] || key;
+          const rawData = payload[key];
+          if (rawData === undefined) return;
 
-        if (colName === "customManual") {
-          const docRef = doc(db, "customManual", "main");
-          const htmlContent = typeof rawData === "string" ? rawData : rawData?.html || rawData?.content || "";
-          await setDoc(docRef, { html: htmlContent, updatedAt: new Date().toISOString() });
-          continue;
-        }
+          if (colName === "customManual") {
+            const docRef = doc(db, "customManual", "main");
+            const htmlContent = typeof rawData === "string" ? rawData : rawData?.html || rawData?.content || "";
+            await setDoc(docRef, { html: htmlContent, updatedAt: new Date().toISOString() });
+            return;
+          }
 
-        if (Array.isArray(rawData)) {
-          await saveDocsToFirestore(colName, rawData, syncDeletions, forceWrite);
-        }
-      }
+          if (Array.isArray(rawData)) {
+            await saveDocsToFirestore(colName, rawData, syncDeletions, forceWrite);
+          }
+        })
+      );
       return true;
     })();
 
@@ -854,6 +933,10 @@ function attachReattachRequestListener() {
   // recupera - qualquer coleção que ainda esteja esperando seu backoff
   // é reanexada na hora, em vez de esperar o timer correr.
   window.addEventListener('firestore_request_reattach', () => {
+    forceReconnect();
+  });
+  window.addEventListener('online', () => {
+    console.log("[ClientFirebase] Conexão de rede restabelecida. Revalidando ouvintes em tempo real...");
     forceReconnect();
   });
 }
@@ -1131,21 +1214,18 @@ export async function fetchDirectlyFromFirestore(): Promise<any> {
           const colCache = getColCache(targetCol);
           const items = snap.docs.map((d) => {
             const data = d.data();
-            colCache.set(d.id, JSON.stringify(data));
+            const itemWithId = { ...data, id: d.id };
+            colCache.set(d.id, canonicalJson(itemWithId));
             if (colName === "audits") {
               return {
-                ...data,
-                id: d.id,
+                ...itemWithId,
                 items: Array.isArray(data.items) ? data.items : [],
                 assets: Array.isArray(data.assets) ? data.assets : [],
                 history: Array.isArray(data.history) ? data.history : [],
                 unifiedMaps: Array.isArray(data.unifiedMaps) ? data.unifiedMaps : [],
               };
             }
-            return {
-              ...data,
-              id: d.id
-            };
+            return itemWithId;
           });
           if (colName === "auditLogs") {
             combinedDb.auditLogs = items;

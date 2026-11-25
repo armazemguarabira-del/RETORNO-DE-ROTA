@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, FiscalAlert, ImportedRoute, RouteObservation, Vale, ValeCollaborator, ReturnForecast, getAssetCode, getAssetCanonicalName, isExemptAsset, getAssetUnitCost, normalizeMapCode } from '../types';
 import { UnifiedCalendarPicker } from './UnifiedCalendarPicker';
-import { isClientFirebaseActive, saveDirectlyToFirestore } from '../clientFirebase';
+import { isClientFirebaseActive, saveDirectlyToFirestore, saveTargetedBatchToFirestore } from '../clientFirebase';
 import { ClipboardCheck, ShieldAlert, ArrowRight, ShieldCheck, CheckSquare, AlertTriangle, HelpCircle, Search, RefreshCw, XCircle, DollarSign, Calendar, SlidersHorizontal, FileSpreadsheet, Clock, CheckCircle2, Shield, Trash2, Camera, BarChart3, AlertCircle, Plus, PlusCircle, FileText, Check, Award, Eye, Calculator, Folder, Copy, X, ArrowUpCircle, ArrowDownCircle, Sparkles, FolderOpen, Download, FileCheck, PackageCheck, UserPlus, FileJson, Archive, Moon, Info, Edit3, Users, Table, LayoutGrid, Filter, Layers, Printer } from 'lucide-react';
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { jsPDF } from 'jspdf';
@@ -835,10 +835,12 @@ export default function FiscalView({
       onSaveImportedRoutes(updatedRoutes);
     }
 
-    // 2. Update audits
+    // 2. Update audits (only active/matching audits, never re-stamping closed historical sessions)
     let updatedAudits = audits;
     if (onSaveAudits && audits.length > 0) {
       updatedAudits = audits.map(a => {
+        const isClosed = (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') && !a.reopeningRequested;
+        if (isClosed) return a;
         const aMap = (a.routeMap || '').toUpperCase().trim();
         const match = targetMap ? (aMap === targetMap) : (targetPlate && a.plate && a.plate.toUpperCase().trim() === targetPlate);
         if (match) {
@@ -3690,6 +3692,15 @@ export default function FiscalView({
     if (activeSession) {
       const currentInAudits = audits.find(a => a.id === activeSession.id);
       if (currentInAudits) {
+        const isFinalizedRemotely =
+          currentInAudits.status === 'finalizado_ok' ||
+          currentInAudits.status === 'finalizado_divergente';
+        if (isFinalizedRemotely && !isFinalizing) {
+          setActiveSession(null);
+          setLoadedSessionTime(undefined);
+          alert(`O mapa ${currentInAudits.routeMap} já foi finalizado e fechado em outro dispositivo ou aba.`);
+          return;
+        }
         // Construct a merged version that preserves locally typed fiscal quantities to avoid overwrites
         const mergedItems = currentInAudits.items.map(item => {
           const localItem = activeSession.items.find(i => i.productCode === item.productCode);
@@ -3718,7 +3729,12 @@ export default function FiscalView({
         };
 
         if (JSON.stringify(mergedSession) !== JSON.stringify(activeSession)) {
-          const hasConflict = currentInAudits.updatedAt && 
+          const isIncomingCheckerUpdate =
+            currentInAudits.status === 'recontagem_finalizada' ||
+            currentInAudits.status === 'conferido_fisico' ||
+            currentInAudits.status === 'reconferencia';
+          const hasConflict = !isIncomingCheckerUpdate &&
+                              currentInAudits.updatedAt && 
                               loadedSessionTime && 
                               currentInAudits.updatedAt !== loadedSessionTime && 
                               currentInAudits.lastUpdatedBy !== currentUser.name;
@@ -3731,7 +3747,7 @@ export default function FiscalView({
         }
       }
     }
-  }, [audits, activeSession?.id, loadedSessionTime, currentUser.name]);
+  }, [audits, activeSession?.id, loadedSessionTime, currentUser.name, isFinalizing]);
   
   // Helper to get local date in YYYY-MM-DD format
   const getTodayLocalDateStr = () => {
@@ -4316,20 +4332,37 @@ export default function FiscalView({
 
     // Exclude if another audit session for the same map and date is ALREADY finalized
     const normA = normalizeMapCode(a.routeMap).toUpperCase();
-    const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+    const aDate = a.routeDate || a.arrivalDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
     const hasAlreadyFinished = audits.some(other => {
       if (other.id === a.id) return false;
       const isFinished = (other.status === 'finalizado_ok' || other.status === 'finalizado_divergente' || (other as any).pdfDownloaded === true || (other as any).surplusFlowStatus === 'BAIXADO') && !other.reopeningRequested;
       if (!isFinished) return false;
 
       const normOther = normalizeMapCode(other.routeMap).toUpperCase();
-      const otherDate = other.arrivalDate || other.routeDate || other.endTime?.split('T')[0] || other.startTime?.split('T')[0];
-      if (aDate && otherDate && aDate !== otherDate) return false;
+      const otherDate = other.routeDate || other.arrivalDate || other.endTime?.split('T')[0] || other.startTime?.split('T')[0];
+      if (!aDate || !otherDate || aDate !== otherDate) return false;
       const sameMap = normOther === normA || (other.unifiedMaps && other.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normA));
       return sameMap;
     });
 
     if (hasAlreadyFinished) return false;
+
+    // Also exclude if the corresponding importedRoute(s) for this map/date are already marked fechado (unless explicitly reopened)
+    if (!a.reopened) {
+      const targetMaps = (a.unifiedMaps && a.unifiedMaps.length > 0)
+        ? a.unifiedMaps.map(m => normalizeMapCode(m).toUpperCase())
+        : (a.routeMap ? a.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase()) : [normA]);
+      const matchedRoutes = (importedRoutes || []).filter(r => {
+        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+        const sameMap = rNorm === normA || targetMaps.includes(rNorm);
+        if (!sameMap) return false;
+        if (r.routeDate && aDate && r.routeDate !== aDate) return false;
+        return true;
+      });
+      if (matchedRoutes.length > 0 && matchedRoutes.every(r => r.status === 'fechado')) {
+        return false;
+      }
+    }
 
     return true;
   });
@@ -5610,30 +5643,32 @@ export default function FiscalView({
     requestConfirm(
       "🔓 Confirmar Reabertura do Mapa?",
       `Tem certeza que deseja reabrir o mapa ${targetAudit.routeMap}? Ele retornará imediatamente para a coluna "Aguardando Conciliação" para conferência e conciliação fiscal.`,
-      () => {
+      async () => {
+        const now = new Date().toISOString();
         const userRoleTitle = currentUser.role === 'auxiliar_logistica' 
           ? 'Auxiliar de Logística' 
           : currentUser.role === 'gestor' 
             ? 'Gestor' 
             : 'Financeiro';
 
+        let updatedTargetAudit: AuditSession | null = null;
         const updatedAudits = audits.map(audit => {
           if (audit.id === auditId) {
             const updatedHistory = [
               ...(audit.history || []),
               {
-                timestamp: new Date().toISOString(),
+                timestamp: now,
                 action: `Mapa Reaberto por ${currentUser.name} (${userRoleTitle})`,
                 user: currentUser.name,
                 details: `Motivo da Reabertura: ${note}`
               }
             ];
-            return {
+            updatedTargetAudit = {
               ...audit,
               status: 'conferido_fisico' as const,
               reopeningRequested: false,
               reopened: true,
-              reopenedAt: new Date().toISOString(),
+              reopenedAt: now,
               reopenedBy: currentUser.name,
               reopeningJustification: note,
               pdfDownloaded: false,
@@ -5642,9 +5677,10 @@ export default function FiscalView({
               closedAt: undefined,
               baixaConcluida: false,
               history: updatedHistory,
-              updatedAt: new Date().toISOString(),
+              updatedAt: now,
               lastUpdatedBy: currentUser.name
             };
+            return updatedTargetAudit;
           }
           return audit;
         });
@@ -5655,7 +5691,7 @@ export default function FiscalView({
           routeMap: targetAudit.routeMap,
           plate: targetAudit.plate,
           status: 'conferido_fisico',
-          timestamp: new Date().toISOString(),
+          timestamp: now,
           read: false,
           title: `🔓 Mapa ${targetAudit.routeMap} Reaberto`,
           message: `O mapa ${targetAudit.routeMap} foi reaberto por ${currentUser.name} (${userRoleTitle}) e retornou para "Aguardando Conciliação".`,
@@ -5663,8 +5699,7 @@ export default function FiscalView({
         };
         updatedAlerts = [newAlert, ...updatedAlerts];
 
-        onSaveAudits(updatedAudits);
-
+        const matchedUpdatedRoutes: ImportedRoute[] = [];
         let nextRoutes = importedRoutes;
         if (onSaveImportedRoutes && importedRoutes) {
           const targetNorm = normalizeMapCode(targetAudit.routeMap).toUpperCase();
@@ -5675,23 +5710,29 @@ export default function FiscalView({
             const isMatched = rNorm === targetNorm || rUpper === targetUpper ||
               (targetAudit.unifiedMaps && targetAudit.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === rNorm || m.trim().toUpperCase() === rUpper));
             if (isMatched) {
-              return { ...r, status: 'em_analise' as const };
+              const updatedRoute: ImportedRoute = { ...r, status: 'em_analise' as const, updatedAt: now };
+              matchedUpdatedRoutes.push(updatedRoute);
+              return updatedRoute;
             }
             return r;
           });
+        }
+
+        if (isClientFirebaseActive() && updatedTargetAudit) {
+          const batchOps: Array<{ colName: string; item: any }> = [
+            { colName: 'audits', item: updatedTargetAudit },
+            { colName: 'fiscalAlerts', item: newAlert }
+          ];
+          matchedUpdatedRoutes.forEach(r => batchOps.push({ colName: 'importedRoutes', item: r }));
+          await saveTargetedBatchToFirestore(batchOps, 6000);
+        }
+
+        onSaveAudits(updatedAudits);
+        if (onSaveImportedRoutes && importedRoutes) {
           onSaveImportedRoutes(nextRoutes);
         }
-
         if (onSaveAlerts) {
           onSaveAlerts(updatedAlerts);
-        }
-
-        if (isClientFirebaseActive()) {
-          saveDirectlyToFirestore({
-            audits: updatedAudits,
-            importedRoutes: nextRoutes,
-            fiscalAlerts: updatedAlerts
-          });
         }
 
         const currentSelected = updatedAudits.find(a => a.id === auditId);
@@ -6590,78 +6631,122 @@ export default function FiscalView({
   };
 
   // Action: Request physical recount (Reconferência)
-  const handleRequestReconferencia = () => {
-    if (!activeSession) return;
+  const handleRequestReconferencia = async () => {
+    if (!activeSession || isFinalizing) return;
     if (!reconciliationNotes.trim()) {
       alert('Por favor, informe no campo de observações o motivo da reconferência (quais produtos apresentaram divergência).');
       return;
     }
 
-    const now = new Date().toISOString();
+    setIsFinalizing(true);
+    try {
+      const now = new Date().toISOString();
 
-    // Preserve first physical count quantities on items and assets so conferente doesn't get zerado items
-    const updatedItems = (activeSession.items || []).map(item => ({
-      ...item,
-      rePhysicalQty: item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty
-    }));
+      // Preserve first physical count quantities on items and assets so conferente doesn't get zerado items
+      const updatedItems = (activeSession.items || []).map(item => ({
+        ...item,
+        rePhysicalQty: item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty
+      }));
 
-    const updatedAssets = (activeSession.assets || []).map(asset => ({
-      ...asset,
-      rePhysicalQty: asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty
-    }));
+      const updatedAssets = (activeSession.assets || []).map(asset => ({
+        ...asset,
+        rePhysicalQty: asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty
+      }));
 
-    const updatedSession: AuditSession = {
-      ...activeSession,
-      items: updatedItems,
-      assets: updatedAssets,
-      status: 'reconferencia',
-      reconciliationNotes: reconciliationNotes.trim(),
-      history: [
-        ...activeSession.history,
-        {
-          timestamp: now,
-          action: 'Reconferência Solicitada',
-          user: currentUser.name,
-          details: reconciliationNotes.trim()
-        }
-      ]
-    };
-
-    const updatedAudits = audits.map(a => a.id === activeSession.id ? updatedSession : a);
-    onSaveAudits(updatedAudits);
-
-    // Trigger alert for the Conferente that a recount has been requested
-    if (onSaveAlerts && fiscalAlerts) {
-      const newAlert: FiscalAlert = {
-        id: 'al_' + Date.now(),
-        routeMap: activeSession.routeMap,
-        plate: activeSession.plate,
-        status: 'recontagem_solicitada' as const,
-        timestamp: now,
-        read: false,
-        title: 'Reconferência Solicitada',
-        message: `O auxiliar de logística ${currentUser.name} solicitou recontagem para o mapa ${activeSession.routeMap} (${activeSession.plate}). Motivo: ${reconciliationNotes.trim()}`,
-        targetRole: 'conferente'
+      const updatedSession: AuditSession = {
+        ...activeSession,
+        items: updatedItems,
+        assets: updatedAssets,
+        status: 'reconferencia',
+        reconciliationNotes: reconciliationNotes.trim(),
+        updatedAt: now,
+        lastUpdatedBy: currentUser.name,
+        history: [
+          ...activeSession.history,
+          {
+            timestamp: now,
+            action: 'Reconferência Solicitada',
+            user: currentUser.name,
+            details: reconciliationNotes.trim()
+          }
+        ]
       };
-      onSaveAlerts([newAlert, ...fiscalAlerts]);
-    }
 
-    // Also set corresponding imported route's status to 'reconferir'
-    if (onSaveImportedRoutes && importedRoutes) {
-      const updatedRoutes = importedRoutes.map(r => {
-        const isMatched = r.routeMap.toUpperCase() === activeSession.routeMap.toUpperCase() ||
-          (activeSession.unifiedMaps && activeSession.unifiedMaps.some(m => m.toUpperCase() === r.routeMap.toUpperCase()));
-        if (isMatched) {
-          return { ...r, status: 'reconferir' as const };
+      const updatedAudits = audits.map(a => a.id === activeSession.id ? updatedSession : a);
+
+      // Trigger alert for the Conferente that a recount has been requested
+      let newAlert: FiscalAlert | null = null;
+      let updatedAlerts = fiscalAlerts;
+      if (onSaveAlerts && fiscalAlerts) {
+        newAlert = {
+          id: 'al_' + Date.now(),
+          routeMap: activeSession.routeMap,
+          plate: activeSession.plate,
+          status: 'recontagem_solicitada' as const,
+          timestamp: now,
+          read: false,
+          title: 'Reconferência Solicitada',
+          message: `O auxiliar de logística ${currentUser.name} solicitou recontagem para o mapa ${activeSession.routeMap} (${activeSession.plate}). Motivo: ${reconciliationNotes.trim()}`,
+          targetRole: 'conferente'
+        };
+        updatedAlerts = [newAlert, ...fiscalAlerts];
+      }
+
+      // Also set corresponding imported route's status to 'reconferir' with normalized map matching
+      const matchedUpdatedRoutes: ImportedRoute[] = [];
+      let updatedRoutes = importedRoutes;
+      if (onSaveImportedRoutes && importedRoutes) {
+        const activeDate = activeSession.routeDate || activeSession.arrivalDate || activeSession.endTime?.split('T')[0] || activeSession.startTime?.split('T')[0];
+        const normActive = normalizeMapCode(activeSession.routeMap).toUpperCase();
+        const targetMaps = (activeSession.unifiedMaps && activeSession.unifiedMaps.length > 0)
+          ? activeSession.unifiedMaps.map(m => normalizeMapCode(m).toUpperCase())
+          : activeSession.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase());
+
+        updatedRoutes = importedRoutes.map(r => {
+          const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+          const isMatchedMap = rNorm === normActive || targetMaps.includes(rNorm) || r.routeMap.toUpperCase() === activeSession.routeMap.toUpperCase();
+          const sameDate = !r.routeDate || !activeDate || r.routeDate === activeDate;
+          if (isMatchedMap && sameDate) {
+            const updatedRoute: ImportedRoute = { ...r, status: 'reconferir' as const, updatedAt: now };
+            matchedUpdatedRoutes.push(updatedRoute);
+            return updatedRoute;
+          }
+          return r;
+        });
+      }
+
+      let syncRes = { ok: true, syncedToServer: true };
+      if (isClientFirebaseActive()) {
+        const batchOps: Array<{ colName: string; item: any }> = [
+          { colName: 'audits', item: updatedSession }
+        ];
+        if (newAlert) {
+          batchOps.push({ colName: 'fiscalAlerts', item: newAlert });
         }
-        return r;
-      });
-      onSaveImportedRoutes(updatedRoutes);
-    }
+        matchedUpdatedRoutes.forEach(r => batchOps.push({ colName: 'importedRoutes', item: r }));
+        syncRes = await saveTargetedBatchToFirestore(batchOps, 6000);
+      }
 
-    alert('Reconferência enviada com sucesso!');
-    setActiveSession(null);
-    setReconciliationNotes('');
+      onSaveAudits(updatedAudits);
+      if (onSaveAlerts && newAlert) {
+        onSaveAlerts(updatedAlerts);
+      }
+      if (onSaveImportedRoutes && importedRoutes) {
+        onSaveImportedRoutes(updatedRoutes);
+      }
+
+      setIsFinalizing(false);
+
+      if (syncRes.syncedToServer) {
+        alert(`Reconferência enviada com sucesso! O mapa ${activeSession.routeMap} já aparece imediatamente para o conferente com as quantidades originais preservadas.`);
+      } else {
+        alert(`Reconferência registrada no aparelho! Assim que o sinal de internet estabilizar, ela aparecerá automaticamente para o conferente.`);
+      }
+      setActiveSession(null);
+      setReconciliationNotes('');
+    } finally {
+      setIsFinalizing(false);
+    }
   };
 
   // Action: Finalize and log audit return (Dar Baixa)
@@ -6713,9 +6798,14 @@ export default function FiscalView({
           auxiliarId: currentUser.id,
           reconciliationNotes: reconciliationNotes.trim() || undefined,
           financeiroCiente: false, // Força a notificação no painel do Financeiro
+          pdfDownloaded: true,
+          closedAt: now,
+          baixaConcluida: true,
           reopened: false,
           reopeningRequested: false,
           reopeningJustification: undefined,
+          updatedAt: now,
+          lastUpdatedBy: currentUser.name,
           history: [
             ...activeSession.history,
             {
@@ -6738,44 +6828,62 @@ export default function FiscalView({
         const { base64, filename, doc } = pdfRes;
 
         // Prepare payload data
-        const activeDate = activeSession.arrivalDate || activeSession.routeDate || activeSession.endTime?.split('T')[0] || activeSession.startTime?.split('T')[0];
+        const activeDate = activeSession.routeDate || activeSession.arrivalDate || activeSession.endTime?.split('T')[0] || activeSession.startTime?.split('T')[0];
         const normActive = normalizeMapCode(activeSession.routeMap).toUpperCase();
+        const targetMemberMaps = (activeSession.unifiedMaps && activeSession.unifiedMaps.length > 0)
+          ? activeSession.unifiedMaps.map(m => normalizeMapCode(m).toUpperCase())
+          : activeSession.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase());
 
+        const closedDuplicateAudits: AuditSession[] = [];
         const updatedAudits = audits.map(a => {
           if (a.id === activeSession.id) return updatedSession;
           const normA = normalizeMapCode(a.routeMap).toUpperCase();
           const sameMap = normA === normActive || a.routeMap.trim().toUpperCase() === activeSession.routeMap.trim().toUpperCase() ||
-            (activeSession.unifiedMaps && activeSession.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normA));
-          const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+            targetMemberMaps.includes(normA) ||
+            (a.unifiedMaps && a.unifiedMaps.some(m => targetMemberMaps.includes(normalizeMapCode(m).toUpperCase())));
+          const aDate = a.routeDate || a.arrivalDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
           const sameDate = !activeDate || !aDate || activeDate === aDate;
 
           if (sameMap && sameDate && (a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada' || a.status === 'em_aberto' || a.status === 'reconferencia')) {
-            return {
+            const closedDup: AuditSession = {
               ...a,
               status: finalStatus,
-              pdfDownloaded: true
+              pdfDownloaded: true,
+              closedAt: now,
+              baixaConcluida: true,
+              reopened: false,
+              reopeningRequested: false,
+              updatedAt: now,
+              lastUpdatedBy: currentUser.name
             };
+            closedDuplicateAudits.push(closedDup);
+            return closedDup;
           }
           return a;
         });
         
+        const matchedUpdatedRoutes: ImportedRoute[] = [];
         let updatedRoutes = importedRoutes;
         if (onSaveImportedRoutes && importedRoutes) {
           updatedRoutes = importedRoutes.map(r => {
             const normR = normalizeMapCode(r.routeMap).toUpperCase();
             const sameMap = normR === normActive || r.routeMap.trim().toUpperCase() === activeSession.routeMap.trim().toUpperCase() ||
-              (activeSession.unifiedMaps && activeSession.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normR || m.trim().toUpperCase() === r.routeMap.trim().toUpperCase()));
-            const sameDate = !r.routeDate || !activeDate || r.routeDate === activeDate;
+              targetMemberMaps.includes(normR);
+            const isWorkingRoute = r.status === 'em_analise' || r.status === 'conferindo' || r.status === 'reconferir';
+            const sameDate = !r.routeDate || !activeDate || r.routeDate === activeDate || r.routeDate === activeSession.arrivalDate || isWorkingRoute;
             if (sameMap && sameDate) {
-              return { ...r, status: 'fechado' as const };
+              const closedRoute: ImportedRoute = { ...r, status: 'fechado' as const, updatedAt: now };
+              matchedUpdatedRoutes.push(closedRoute);
+              return closedRoute;
             }
             return r;
           });
         }
 
+        let newAlert: FiscalAlert | null = null;
         let updatedAlerts = fiscalAlerts;
         if (onSaveAlerts && fiscalAlerts) {
-          const newAlert: FiscalAlert = {
+          newAlert = {
             id: 'al_' + Date.now(),
             routeMap: activeSession.routeMap,
             plate: activeSession.plate,
@@ -6789,8 +6897,28 @@ export default function FiscalView({
           updatedAlerts = [newAlert, ...fiscalAlerts];
         }
 
-        // 2. DISPARAR A SAGA DE BAIXA NO BACKEND E NO FIRESTORE
-        let result: any = { success: true, durableBackup: { cloudStorage: false, firestore: false } };
+        // 2. DISPARAR A SAGA DE BAIXA NO FIRESTORE (ATÔMICO) E NO BACKEND
+        let result: any = { success: false, durableBackup: { cloudStorage: false, firestore: false } };
+        if (isClientFirebaseActive()) {
+          try {
+            const batchOps: Array<{ colName: string; item: any }> = [
+              { colName: 'audits', item: updatedSession }
+            ];
+            closedDuplicateAudits.forEach(dup => batchOps.push({ colName: 'audits', item: dup }));
+            matchedUpdatedRoutes.forEach(r => batchOps.push({ colName: 'importedRoutes', item: r }));
+            if (newAlert) {
+              batchOps.push({ colName: 'fiscalAlerts', item: newAlert });
+            }
+            const fsSyncRes = await saveTargetedBatchToFirestore(batchOps, 7000);
+            if (fsSyncRes.syncedToServer) {
+              result.success = true;
+              result.durableBackup.firestore = true;
+            }
+          } catch (fsErr) {
+            console.warn("[Baixa Saga] Aviso ao sincronizar baixa com Firestore:", fsErr);
+          }
+        }
+
         try {
           const response = await fetch('/api/concluir-baixa', {
             method: 'POST',
@@ -6809,26 +6937,16 @@ export default function FiscalView({
           if (response.ok) {
             const serverResult = await response.json();
             if (serverResult && serverResult.success) {
-              result = serverResult;
+              if (!isClientFirebaseActive()) {
+                result.success = true;
+              }
+              if (serverResult.filePath) {
+                result.filePath = serverResult.filePath;
+              }
             }
           }
         } catch (srvErr) {
           console.warn("[Baixa Saga] Aviso ao gravar baixa no servidor de retaguarda:", srvErr);
-        }
-
-        if (isClientFirebaseActive()) {
-          try {
-            await saveDirectlyToFirestore({
-              audits: updatedAudits,
-              importedRoutes: updatedRoutes,
-              fiscalAlerts: updatedAlerts
-            });
-            if (result.durableBackup) {
-              result.durableBackup.firestore = true;
-            }
-          } catch (fsErr) {
-            console.warn("[Baixa Saga] Aviso ao sincronizar baixa com Firestore:", fsErr);
-          }
         }
 
         console.log("[Baixa Saga] Sucesso na execução da saga de baixa:", result);
@@ -6858,11 +6976,11 @@ export default function FiscalView({
         
         let alertMessage = "";
         if (!isSavedOnServer) {
-          alertMessage = `Atenção: Houve um atraso na gravação do servidor. O PDF foi baixado no seu computador. O sistema continuará tentando sincronizar em segundo plano.`;
+          alertMessage = `Atenção: Houve um atraso na confirmação da nuvem. O PDF foi baixado no seu computador e o fechamento continuará sincronizando em segundo plano.`;
         } else {
           alertMessage = finalStatus === 'finalizado_ok' 
-            ? 'Retorno baixado com sucesso! Relatório PDF salvo no servidor de arquivos (pasta compartilhada) e baixado no seu computador.' 
-            : 'Retorno baixado com divergências registradas. PDF arquivado no servidor de arquivos e no seu computador com sucesso.';
+            ? 'Retorno baixado com sucesso! Mapa fechado em definitivo e relatório PDF salvo.' 
+            : 'Retorno baixado com divergências registradas. Mapa fechado em definitivo e relatório PDF salvo.';
         }
         alert(alertMessage);
         setActiveSession(null);

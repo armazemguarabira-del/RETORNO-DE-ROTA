@@ -125,6 +125,8 @@ export interface AuditSession {
   
   reconciliationNotes?: string;
   pdfDownloaded?: boolean;
+  closedAt?: string;
+  baixaConcluida?: boolean;
   financeiroCiente?: boolean; // Financeiro ciente do fechamento para Promax
   isEstimated?: boolean;      // Marcar se a auditoria possui dados estimados/retroativos
 

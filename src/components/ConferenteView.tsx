@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { User, Driver, Vehicle, Product, ActiveAsset, AuditSession, AuditItem, AuditAssetItem, AuditExchangeItem, ReturnForecast, FiscalAlert, ImportedRoute, CarregamentoProcess, Empilhador, isTreatableAssetId, getAssetCode, getAssetCanonicalName, normalizeMapCode } from '../types';
 import { ImageDB, PhotoRecord } from '../imageDb';
 import { DEFAULT_ACTIVE_ASSETS } from '../data';
-import { isClientFirebaseActive, saveDirectlyToFirestore } from '../clientFirebase';
+import { isClientFirebaseActive, saveDirectlyToFirestore, saveTargetedBatchToFirestore } from '../clientFirebase';
 import { 
   Play, ClipboardCheck, Search, Plus, Trash2, ArrowRight, AlertTriangle, 
   Clock, RefreshCw, UserCheck, Camera, Upload, Bell, CheckCircle2, 
@@ -81,6 +81,7 @@ export default function ConferenteView({
 
   // Navigation / active sub-view
   const [activeSession, setActiveSession] = useState<AuditSession | null>(null);
+  const [isFinishingAudit, setIsFinishingAudit] = useState(false);
 
   // Custom Confirmation Modal state
   const [confirmModal, setConfirmModal] = useState<{
@@ -570,6 +571,7 @@ export default function ConferenteView({
 
   // Concurrency tracking state
   const [loadedSessionTime, setLoadedSessionTime] = useState<string | undefined>(undefined);
+  const [recountDrafts, setRecountDrafts] = useState<Record<string, string>>({});
 
   // Floating Bottle Calculator states
   const [isCalculatorOpen, setIsCalculatorOpen] = useState(false);
@@ -639,11 +641,51 @@ export default function ConferenteView({
     }
   }, [activeSession]);
 
+  // Clear temporary recount input drafts when switching session or status
+  useEffect(() => {
+    setRecountDrafts({});
+  }, [activeSession?.id, activeSession?.status]);
+
   // Keep activeSession in sync with updates from parent audits (real-time/collaboration sync, checking for conflicts)
   useEffect(() => {
     if (activeSession) {
       const currentInAudits = audits.find(a => a.id === activeSession.id);
       if (currentInAudits) {
+        const isCurrentFinalized = (
+          currentInAudits.status === 'finalizado_ok' ||
+          currentInAudits.status === 'finalizado_divergente' ||
+          (currentInAudits as any).pdfDownloaded === true ||
+          (currentInAudits as any).surplusFlowStatus === 'BAIXADO'
+        ) && !currentInAudits.reopeningRequested;
+
+        // If Fiscal/Gestor already finalized this map remotely, close immediately so Conferente never overwrites a closed map
+        if (isCurrentFinalized) {
+          localStorage.removeItem('conferente_active_session_id');
+          setActiveSession(null);
+          setLoadedSessionTime(undefined);
+          alert(`Aviso: O mapa ${currentInAudits.routeMap} já foi conciliado e fechado por ${currentInAudits.lastUpdatedBy || 'Auxiliar/Gestor'}.`);
+          return;
+        }
+
+        // If Fiscal sent this map back to reconferencia while Conferente had it open, sync immediately preserving original counts
+        if (currentInAudits.status === 'reconferencia' && activeSession.status !== 'reconferencia') {
+          const syncedItems = (currentInAudits.items || []).map(item => ({
+            ...item,
+            rePhysicalQty: item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty
+          }));
+          const syncedAssets = (currentInAudits.assets || []).map(asset => ({
+            ...asset,
+            rePhysicalQty: asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty
+          }));
+          setActiveSession({
+            ...currentInAudits,
+            items: syncedItems,
+            assets: syncedAssets
+          });
+          setLoadedSessionTime(currentInAudits.updatedAt);
+          return;
+        }
+
         if (JSON.stringify(currentInAudits) !== JSON.stringify(activeSession)) {
           // If there is an active concurrency conflict, we do NOT auto-overwrite,
           // giving the user the opportunity to resolve or sync via the banner
@@ -774,13 +816,26 @@ export default function ConferenteView({
   }, []);
 
   const handleOpenSession = (audit: AuditSession) => {
+    const latestAudit = audits.find(a => a.id === audit.id) || audit;
+    const isLatestFinalized = (
+      latestAudit.status === 'finalizado_ok' ||
+      latestAudit.status === 'finalizado_divergente' ||
+      (latestAudit as any).pdfDownloaded === true ||
+      (latestAudit as any).surplusFlowStatus === 'BAIXADO'
+    ) && !latestAudit.reopeningRequested;
+
+    if (isLatestFinalized) {
+      localStorage.removeItem('conferente_active_session_id');
+      alert(`O mapa ${latestAudit.routeMap} já foi finalizado e fechado fiscalmente.`);
+      return;
+    }
+
     const nowStr = new Date().toISOString();
-    setLoadedSessionTime(audit.updatedAt);
     
     // Ensure exchanges are populated
-    let initialExchanges = audit.exchanges;
+    let initialExchanges = latestAudit.exchanges;
     if (!initialExchanges || initialExchanges.length === 0) {
-      const matchingRoute = importedRoutes.find(r => r.routeMap.toUpperCase() === audit.routeMap.trim().toUpperCase());
+      const matchingRoute = importedRoutes.find(r => r.routeMap.toUpperCase() === latestAudit.routeMap.trim().toUpperCase());
       if (matchingRoute && matchingRoute.exchanges && matchingRoute.exchanges.length > 0) {
         initialExchanges = matchingRoute.exchanges;
       } else {
@@ -789,7 +844,7 @@ export default function ConferenteView({
     }
 
     // Ensure assets are populated
-    let initialAssets = audit.assets;
+    let initialAssets = latestAudit.assets;
     if (!initialAssets || initialAssets.length === 0) {
       const assetsSource = activeAssets && activeAssets.length > 0 ? activeAssets : DEFAULT_ACTIVE_ASSETS;
       initialAssets = assetsSource.map(asset => ({
@@ -801,8 +856,8 @@ export default function ConferenteView({
     }
 
     // Ensure items and assets preserve first count as rePhysicalQty if in reconferencia
-    let initialItems = audit.items || [];
-    if (audit.status === 'reconferencia') {
+    let initialItems = latestAudit.items || [];
+    if (latestAudit.status === 'reconferencia') {
       initialItems = initialItems.map(item => ({
         ...item,
         rePhysicalQty: item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty
@@ -814,9 +869,9 @@ export default function ConferenteView({
     }
 
     // Calculate accumulated elapsed duration from previous session run if active
-    let accumulatedMs = audit.totalCountingDurationMs || 0;
-    if (!audit.isSuspended && audit.lastTimerStart) {
-      const delta = Date.now() - new Date(audit.lastTimerStart).getTime();
+    let accumulatedMs = latestAudit.totalCountingDurationMs || 0;
+    if (!latestAudit.isSuspended && latestAudit.lastTimerStart) {
+      const delta = Date.now() - new Date(latestAudit.lastTimerStart).getTime();
       if (delta > 0 && !isNaN(delta)) {
         accumulatedMs += delta;
       }
@@ -824,21 +879,35 @@ export default function ConferenteView({
 
     // If already suspended, don't start ticking. Else, tick starting now.
     const updatedSession: AuditSession = {
-      ...audit,
+      ...latestAudit,
       items: initialItems,
-      lastTimerStart: audit.isSuspended ? undefined : nowStr,
+      lastTimerStart: latestAudit.isSuspended ? undefined : nowStr,
       totalCountingDurationMs: accumulatedMs,
       exchanges: initialExchanges,
-      assets: initialAssets
+      assets: initialAssets,
+      updatedAt: nowStr,
+      lastUpdatedBy: currentUser.name
     };
     
+    setLoadedSessionTime(nowStr);
     setActiveSession(updatedSession);
-    const updatedAudits = audits.map(a => a.id === audit.id ? updatedSession : a);
+    const updatedAudits = audits.map(a => a.id === latestAudit.id ? updatedSession : a);
     onSaveAudits(updatedAudits);
   };
 
   const handleExitSession = () => {
     if (!activeSession) return;
+
+    const latestInAudits = audits.find(a => a.id === activeSession.id);
+    if (
+      latestInAudits &&
+      (latestInAudits.status === 'finalizado_ok' || latestInAudits.status === 'finalizado_divergente') &&
+      !latestInAudits.reopeningRequested
+    ) {
+      localStorage.removeItem('conferente_active_session_id');
+      setActiveSession(null);
+      return;
+    }
     
     let updatedSession = { ...activeSession };
     if (!activeSession.isSuspended && activeSession.lastTimerStart) {
@@ -1158,12 +1227,22 @@ export default function ConferenteView({
     const targetMaps = unifiedMaps && unifiedMaps.length > 0 ? unifiedMaps : [finalRouteMap];
     const targetMapsUpper = targetMaps.map(m => m.trim().toUpperCase());
 
+    const matchingRoutesForDate = (importedRoutes || []).filter(r => {
+      const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+      return targetMapsUpper.some(m => normalizeMapCode(m).toUpperCase() === rNorm || m === r.routeMap.toUpperCase());
+    });
+    const resolvedRouteDate = matchingRoutesForDate.find(r => r.routeDate)?.routeDate;
+
     // Prevent restarting a conference on a map that is already finalized and closed (without re-opening request)
     const isAlreadyClosed = audits.some(a => {
       const normA = normalizeMapCode(a.routeMap).toUpperCase();
       const isMatch = normA === finalRouteMap.toUpperCase() ||
         targetMapsUpper.some(m => normA === normalizeMapCode(m).toUpperCase() || (a.unifiedMaps && a.unifiedMaps.map(normalizeMapCode).map(u => u.toUpperCase()).includes(normalizeMapCode(m).toUpperCase())));
       if (!isMatch) return false;
+      if (resolvedRouteDate) {
+        const aDate = a.routeDate || a.arrivalDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+        if (aDate && aDate !== resolvedRouteDate) return false;
+      }
       return (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') && !a.reopeningRequested;
     });
 
@@ -1290,6 +1369,7 @@ export default function ConferenteView({
         items: mergedItems,
         routeMap: finalRouteMap,
         unifiedMaps: unifiedMaps,
+        routeDate: existingMemberAudit.routeDate || resolvedRouteDate,
         plate: finalPlate.toUpperCase(),
         exchangePlate: exchangePlate.trim().toUpperCase() || existingMemberAudit.exchangePlate,
         driverId: finalDriverId,
@@ -1350,6 +1430,7 @@ export default function ConferenteView({
         helperId: finalHelperId || undefined,
         arrivalKm: Number(arrivalKm),
         arrivalDate: new Date().toISOString().split('T')[0],
+        routeDate: resolvedRouteDate,
         startTime: nowStr,
         lastTimerStart: nowStr,
         totalCountingDurationMs: 0,
@@ -1672,26 +1753,20 @@ export default function ConferenteView({
     onSaveAudits(updatedAudits);
   };
 
-  const handleConfirmBlitz = () => {
-    if (!activeSession) return;
-    
-    const updatedSession: AuditSession = {
-      ...activeSession,
-      blitzBoxesChecked: 0,
-      blitzAvariasFound: 0
-    };
-    
-    // Update local state first
-    setActiveSession(updatedSession);
-    const updatedAudits = audits.map(a => a.id === activeSession.id ? updatedSession : a);
-    onSaveAudits(updatedAudits);
-    
-    // Hide the blitz modal
-    setShowBlitzModal(false);
-    
-    // Now call the finalization routine
-    setTimeout(() => {
-      const isReconferindo = updatedSession.status === 'reconferencia';
+  const handleConfirmBlitz = async () => {
+    if (!activeSession || isFinishingAudit) return;
+    const latestAudit = audits.find(a => a.id === activeSession.id);
+    if (latestAudit && (latestAudit.status === 'finalizado_ok' || latestAudit.status === 'finalizado_divergente') && !latestAudit.reopened && !latestAudit.reopeningRequested) {
+      alert(`O mapa ${latestAudit.routeMap} já foi finalizado pela conciliação fiscal. Esta tela será fechada para evitar alteração indevida.`);
+      localStorage.removeItem('conferente_active_session_id');
+      setShowBlitzModal(false);
+      setActiveSession(null);
+      return;
+    }
+    setIsFinishingAudit(true);
+
+    try {
+      const isReconferindo = activeSession.status === 'reconferencia';
       const now = new Date().toISOString();
       const nextStatus = isReconferindo ? 'recontagem_finalizada' : 'conferido_fisico';
       const actionText = isReconferindo ? 'Reconferência Física Finalizada' : 'Conferência Física Finalizada';
@@ -1699,21 +1774,25 @@ export default function ConferenteView({
         ? `Re-conferido com ${sessionPhotos.length} fotos salvas como prova. Veículo em blitz.` 
         : `Aguardando validação fiscal. Veículo em blitz.`;
 
-      let finalDurationMs = updatedSession.totalCountingDurationMs || 0;
-      if (!updatedSession.isSuspended && updatedSession.lastTimerStart) {
-        finalDurationMs += Date.now() - new Date(updatedSession.lastTimerStart).getTime();
+      let finalDurationMs = activeSession.totalCountingDurationMs || 0;
+      if (!activeSession.isSuspended && activeSession.lastTimerStart) {
+        finalDurationMs += Date.now() - new Date(activeSession.lastTimerStart).getTime();
       }
 
       const finalizedSession: AuditSession = {
-        ...updatedSession,
-        items: getMergedFinalItems(updatedSession),
+        ...activeSession,
+        blitzBoxesChecked: 0,
+        blitzAvariasFound: 0,
+        items: getMergedFinalItems(activeSession),
         status: nextStatus,
         reopeningRequested: false,
         endTime: now,
         lastTimerStart: undefined,
         totalCountingDurationMs: finalDurationMs,
+        updatedAt: now,
+        lastUpdatedBy: currentUser.name,
         history: [
-          ...updatedSession.history,
+          ...activeSession.history,
           {
             timestamp: now,
             action: actionText,
@@ -1726,11 +1805,11 @@ export default function ConferenteView({
       const finalAudits = audits.some(a => a.id === activeSession.id)
         ? audits.map(a => a.id === activeSession.id ? finalizedSession : a)
         : [finalizedSession, ...audits];
-      onSaveAudits(finalAudits);
 
-      // Create notification alert for Auxiliar de Logistica
+      let newAlert: FiscalAlert | null = null;
+      let updatedAlerts = fiscalAlerts;
       if (onSaveAlerts && fiscalAlerts) {
-        const newAlert: FiscalAlert = {
+        newAlert = {
           id: 'al_' + Date.now(),
           routeMap: activeSession.routeMap,
           plate: activeSession.plate,
@@ -1743,37 +1822,78 @@ export default function ConferenteView({
             : `O conferente ${currentUser.name} finalizou a conferência física com blitz do mapa ${activeSession.routeMap} (${activeSession.plate}).`,
           targetRole: 'auxiliar_logistica'
         };
-        onSaveAlerts([newAlert, ...fiscalAlerts]);
+        updatedAlerts = [newAlert, ...fiscalAlerts];
       }
 
-      // Update imported route status on client-side
+      const matchedUpdatedRoutes: ImportedRoute[] = [];
+      let updatedRoutes = importedRoutes;
       if (onSaveImportedRoutes && importedRoutes) {
         const targetMapCodes = (activeSession.unifiedMaps && activeSession.unifiedMaps.length > 0)
           ? activeSession.unifiedMaps.map(m => normalizeMapCode(m).toUpperCase())
           : activeSession.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase());
         const sessionMapNorm = normalizeMapCode(activeSession.routeMap).toUpperCase();
 
-        const updatedRoutes = importedRoutes.map(r => {
+        updatedRoutes = importedRoutes.map(r => {
           const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
           const isMatched = rNorm === sessionMapNorm || targetMapCodes.includes(rNorm);
-          return isMatched ? { ...r, status: 'em_analise' as const } : r;
+          if (isMatched) {
+            const updatedRoute: ImportedRoute = { ...r, status: 'em_analise' as const, updatedAt: now };
+            matchedUpdatedRoutes.push(updatedRoute);
+            return updatedRoute;
+          }
+          return r;
         });
+      }
+
+      let syncRes = { ok: true, syncedToServer: true };
+      if (isClientFirebaseActive()) {
+        const batchOps: Array<{ colName: string; item: any }> = [
+          { colName: 'audits', item: finalizedSession }
+        ];
+        if (newAlert) {
+          batchOps.push({ colName: 'fiscalAlerts', item: newAlert });
+        }
+        matchedUpdatedRoutes.forEach(r => {
+          batchOps.push({ colName: 'importedRoutes', item: r });
+        });
+        syncRes = await saveTargetedBatchToFirestore(batchOps, 6000);
+      }
+
+      onSaveAudits(finalAudits);
+      if (onSaveAlerts && newAlert) {
+        onSaveAlerts(updatedAlerts);
+      }
+      if (onSaveImportedRoutes && importedRoutes) {
         onSaveImportedRoutes(updatedRoutes);
       }
 
-      // Show success feedback
-      alert(`Conferência e Blitz finalizadas com sucesso! Rota ${activeSession.routeMap} enviada para conciliação fiscal.`);
-      
-      // Close session and remove saved active session
+      setShowBlitzModal(false);
+      setIsFinishingAudit(false);
+
+      if (syncRes.syncedToServer) {
+        alert(`Conferência e Blitz finalizadas com sucesso! Rota ${activeSession.routeMap} enviada imediatamente para conciliação fiscal.`);
+      } else {
+        alert(`Conferência e Blitz salvas no dispositivo! Aguardando estabilização da internet para aparecer na conciliação fiscal da rota ${activeSession.routeMap}.`);
+      }
+
       setRefugoPhotos([]);
       localStorage.removeItem('conferente_active_session_id');
       setActiveSession(null);
-    }, 100);
+    } finally {
+      setIsFinishingAudit(false);
+    }
   };
 
   // Action: Complete physical conference & save
   const handleFinishPhysicalAudit = async () => {
-    if (!activeSession) return;
+    if (!activeSession || isFinishingAudit) return;
+    const latestAudit = audits.find(a => a.id === activeSession.id);
+    if (latestAudit && (latestAudit.status === 'finalizado_ok' || latestAudit.status === 'finalizado_divergente') && !latestAudit.reopened && !latestAudit.reopeningRequested) {
+      alert(`O mapa ${latestAudit.routeMap} já foi finalizado pela conciliação fiscal. Esta tela será fechada para evitar alteração indevida.`);
+      localStorage.removeItem('conferente_active_session_id');
+      setActiveSession(null);
+      return;
+    }
     
     // Check if the route is a blitz route and hasn't had the blitz data entered yet
     const sessionMapNorm = normalizeMapCode(activeSession.routeMap).toUpperCase();
@@ -1799,119 +1919,152 @@ export default function ConferenteView({
       return;
     }
 
-    const now = new Date().toISOString();
-    const nextStatus = isReconferindo ? 'recontagem_finalizada' : 'conferido_fisico';
-    const actionText = isReconferindo ? 'Reconferência Física Finalizada' : 'Conferência Física Finalizada';
-    const detailsText = isReconferindo 
-      ? `Re-conferido com ${sessionPhotos.length} fotos salvas como prova.` 
-      : 'Aguardando validação fiscal';
+    setIsFinishingAudit(true);
+    try {
+      const now = new Date().toISOString();
+      const nextStatus = isReconferindo ? 'recontagem_finalizada' : 'conferido_fisico';
+      const actionText = isReconferindo ? 'Reconferência Física Finalizada' : 'Conferência Física Finalizada';
+      const detailsText = isReconferindo 
+        ? `Re-conferido com ${sessionPhotos.length} fotos salvas como prova.` 
+        : 'Aguardando validação fiscal';
 
-    let finalDurationMs = activeSession.totalCountingDurationMs || 0;
-    if (!activeSession.isSuspended && activeSession.lastTimerStart) {
-      finalDurationMs += Date.now() - new Date(activeSession.lastTimerStart).getTime();
-    }
+      let finalDurationMs = activeSession.totalCountingDurationMs || 0;
+      if (!activeSession.isSuspended && activeSession.lastTimerStart) {
+        finalDurationMs += Date.now() - new Date(activeSession.lastTimerStart).getTime();
+      }
 
-    // Auto-associate any captured refugoPhotos to the refugos in the session
-    let updatedRefugos = [...(activeSession.refugos || [])];
-    if (refugoPhotos.length > 0 && updatedRefugos.length > 0) {
-      const savedPhotoIds: string[] = [];
-      for (let pIdx = 0; pIdx < refugoPhotos.length; pIdx++) {
-        const photo = refugoPhotos[pIdx];
-        const savedRecord = await savePhotoRecordToDb(
-          photo,
-          `ref_batch_${Date.now()}_${pIdx}`,
-          `Refugo e Avarias (${updatedRefugos.length} itens)`,
-          'refugo'
-        );
-        if (savedRecord) {
-          savedPhotoIds.push(savedRecord.id);
+      // Auto-associate any captured refugoPhotos to the refugos in the session
+      let updatedRefugos = [...(activeSession.refugos || [])];
+      if (refugoPhotos.length > 0 && updatedRefugos.length > 0) {
+        const savedPhotoIds: string[] = [];
+        for (let pIdx = 0; pIdx < refugoPhotos.length; pIdx++) {
+          const photo = refugoPhotos[pIdx];
+          const savedRecord = await savePhotoRecordToDb(
+            photo,
+            `ref_batch_${Date.now()}_${pIdx}`,
+            `Refugo e Avarias (${updatedRefugos.length} itens)`,
+            'refugo'
+          );
+          if (savedRecord) {
+            savedPhotoIds.push(savedRecord.id);
+          }
+        }
+
+        if (savedPhotoIds.length > 0) {
+          updatedRefugos = updatedRefugos.map((ref, index) => {
+            const photoId = savedPhotoIds[index % savedPhotoIds.length] || savedPhotoIds[0];
+            return { ...ref, photoId, photoUrl: undefined };
+          });
         }
       }
 
-      if (savedPhotoIds.length > 0) {
-        updatedRefugos = updatedRefugos.map((ref, index) => {
-          const photoId = savedPhotoIds[index % savedPhotoIds.length] || savedPhotoIds[0];
-          return { ...ref, photoId, photoUrl: undefined };
-        });
-      }
-    }
-
-    const updatedSession: AuditSession = {
-      ...activeSession,
-      items: getMergedFinalItems(activeSession),
-      status: nextStatus,
-      reopeningRequested: false,
-      endTime: now,
-      lastTimerStart: undefined,
-      totalCountingDurationMs: finalDurationMs,
-      refugos: updatedRefugos,
-      history: [
-        ...activeSession.history,
-        {
-          timestamp: now,
-          action: actionText,
-          user: currentUser.name,
-          details: detailsText
-        }
-      ]
-    };
-
-    const updatedAudits = audits.some(a => a.id === activeSession.id)
-      ? audits.map(a => a.id === activeSession.id ? updatedSession : a)
-      : [updatedSession, ...audits];
-    onSaveAudits(updatedAudits);
-
-    let updatedAlerts = fiscalAlerts;
-    if (onSaveAlerts && fiscalAlerts) {
-      const newAlert: FiscalAlert = {
-        id: 'al_' + Date.now(),
-        routeMap: activeSession.routeMap,
-        plate: activeSession.plate,
-        status: isReconferindo ? 'recontagem_finalizada' as const : 'conferido_fisico' as const,
-        timestamp: now,
-        read: false,
-        title: isReconferindo ? 'Recontagem Finalizada' : 'Veículo Conferido',
-        message: isReconferindo 
-          ? `O conferente ${currentUser.name} finalizou a recontagem do mapa ${activeSession.routeMap} (${activeSession.plate}).`
-          : `O conferente ${currentUser.name} finalizou a conferência física do mapa ${activeSession.routeMap} (${activeSession.plate}).`,
-        targetRole: 'auxiliar_logistica'
+      const updatedSession: AuditSession = {
+        ...activeSession,
+        items: getMergedFinalItems(activeSession),
+        status: nextStatus,
+        reopeningRequested: false,
+        endTime: now,
+        lastTimerStart: undefined,
+        totalCountingDurationMs: finalDurationMs,
+        refugos: updatedRefugos,
+        updatedAt: now,
+        lastUpdatedBy: currentUser.name,
+        history: [
+          ...activeSession.history,
+          {
+            timestamp: now,
+            action: actionText,
+            user: currentUser.name,
+            details: detailsText
+          }
+        ]
       };
-      updatedAlerts = [newAlert, ...fiscalAlerts];
-      onSaveAlerts(updatedAlerts);
-    }
 
-    // Transition matching ImportedRoute to em_analise (green status)
-    let updatedRoutes = importedRoutes;
-    if (onSaveImportedRoutes && importedRoutes) {
-      const targetMapCodes = (activeSession.unifiedMaps && activeSession.unifiedMaps.length > 0)
-        ? activeSession.unifiedMaps.map(m => normalizeMapCode(m).toUpperCase())
-        : activeSession.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase());
-      const sessionMapNorm = normalizeMapCode(activeSession.routeMap).toUpperCase();
+      const updatedAudits = audits.some(a => a.id === activeSession.id)
+        ? audits.map(a => a.id === activeSession.id ? updatedSession : a)
+        : [updatedSession, ...audits];
 
-      updatedRoutes = importedRoutes.map(r => {
-        const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
-        const isMatched = rNorm === sessionMapNorm || targetMapCodes.includes(rNorm);
-        return isMatched ? { ...r, status: 'em_analise' as const } : r;
-      });
-      onSaveImportedRoutes(updatedRoutes);
-    }
-
-    if (isClientFirebaseActive()) {
-      try {
-        saveDirectlyToFirestore({
-          audits: updatedAudits,
-          importedRoutes: updatedRoutes,
-          fiscalAlerts: updatedAlerts
-        });
-      } catch (fsErr) {
-        console.warn('[Conferente] Aviso ao sincronizar conferência com o Firestore:', fsErr);
+      let newAlert: FiscalAlert | null = null;
+      let updatedAlerts = fiscalAlerts;
+      if (onSaveAlerts && fiscalAlerts) {
+        newAlert = {
+          id: 'al_' + Date.now(),
+          routeMap: activeSession.routeMap,
+          plate: activeSession.plate,
+          status: isReconferindo ? 'recontagem_finalizada' as const : 'conferido_fisico' as const,
+          timestamp: now,
+          read: false,
+          title: isReconferindo ? 'Recontagem Finalizada' : 'Veículo Conferido',
+          message: isReconferindo 
+            ? `O conferente ${currentUser.name} finalizou a recontagem do mapa ${activeSession.routeMap} (${activeSession.plate}).`
+            : `O conferente ${currentUser.name} finalizou a conferência física do mapa ${activeSession.routeMap} (${activeSession.plate}).`,
+          targetRole: 'auxiliar_logistica'
+        };
+        updatedAlerts = [newAlert, ...fiscalAlerts];
       }
-    }
 
-    alert(`${actionText} com sucesso! Enviado para conciliação do Auxiliar de Armazém/Logística.`);
-    setRefugoPhotos([]);
-    localStorage.removeItem('conferente_active_session_id');
-    setActiveSession(null);
+      // Transition matching ImportedRoute to em_analise (green status)
+      const matchedUpdatedRoutes: ImportedRoute[] = [];
+      let updatedRoutes = importedRoutes;
+      if (onSaveImportedRoutes && importedRoutes) {
+        const targetMapCodes = (activeSession.unifiedMaps && activeSession.unifiedMaps.length > 0)
+          ? activeSession.unifiedMaps.map(m => normalizeMapCode(m).toUpperCase())
+          : activeSession.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase());
+        const sessionMapNormInner = normalizeMapCode(activeSession.routeMap).toUpperCase();
+
+        updatedRoutes = importedRoutes.map(r => {
+          const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+          const isMatched = rNorm === sessionMapNormInner || targetMapCodes.includes(rNorm);
+          if (isMatched) {
+            const updatedRoute: ImportedRoute = { ...r, status: 'em_analise' as const, updatedAt: now };
+            matchedUpdatedRoutes.push(updatedRoute);
+            return updatedRoute;
+          }
+          return r;
+        });
+      }
+
+      let syncRes = { ok: true, syncedToServer: true };
+      if (isClientFirebaseActive()) {
+        try {
+          const batchOps: Array<{ colName: string; item: any }> = [
+            { colName: 'audits', item: updatedSession }
+          ];
+          if (newAlert) {
+            batchOps.push({ colName: 'fiscalAlerts', item: newAlert });
+          }
+          matchedUpdatedRoutes.forEach(r => {
+            batchOps.push({ colName: 'importedRoutes', item: r });
+          });
+          syncRes = await saveTargetedBatchToFirestore(batchOps, 6000);
+        } catch (fsErr) {
+          console.warn('[Conferente] Aviso ao sincronizar conferência com o Firestore:', fsErr);
+          syncRes = { ok: false, syncedToServer: false };
+        }
+      }
+
+      onSaveAudits(updatedAudits);
+      if (onSaveAlerts && newAlert) {
+        onSaveAlerts(updatedAlerts);
+      }
+      if (onSaveImportedRoutes && importedRoutes) {
+        onSaveImportedRoutes(updatedRoutes);
+      }
+
+      setIsFinishingAudit(false);
+
+      if (syncRes.syncedToServer) {
+        alert(`${actionText} com sucesso! Enviado imediatamente para conciliação do Auxiliar de Armazém/Logística.`);
+      } else {
+        alert(`${actionText} salva localmente no aparelho! Assim que o sinal de internet estabilizar, ela aparecerá automaticamente para o Auxiliar de Armazém/Logística.`);
+      }
+
+      setRefugoPhotos([]);
+      localStorage.removeItem('conferente_active_session_id');
+      setActiveSession(null);
+    } finally {
+      setIsFinishingAudit(false);
+    }
   };
 
   // Webcam stream handlers
@@ -2576,6 +2729,11 @@ export default function ConferenteView({
   }, [products, exchangeSearch, productUsageCounts]);
 
   const getMergedFinalItems = (session: AuditSession): AuditItem[] => {
+    const normalizeProdCode = (c?: string) => {
+      const s = String(c || '').trim().toUpperCase();
+      return s.replace(/^0+/, '') || s;
+    };
+
     const routeItems: { [key: string]: AuditItem } = {};
     const mapsToSearch = (session.unifiedMaps && session.unifiedMaps.length > 0)
       ? session.unifiedMaps
@@ -2589,12 +2747,13 @@ export default function ConferenteView({
       });
       if (r && r.items) {
         r.items.forEach(item => {
-          const prod = products.find(p => p.code === item.productCode);
+          const prod = products.find(p => normalizeProdCode(p.code) === normalizeProdCode(item.productCode));
           const cost = prod ? prod.cost : 0;
-          if (routeItems[item.productCode]) {
-            routeItems[item.productCode].fiscalQty = (routeItems[item.productCode].fiscalQty || 0) + item.qty;
+          const key = normalizeProdCode(item.productCode);
+          if (routeItems[key]) {
+            routeItems[key].fiscalQty = (routeItems[key].fiscalQty || 0) + item.qty;
           } else {
-            routeItems[item.productCode] = {
+            routeItems[key] = {
               productCode: item.productCode,
               productDescription: item.productDescription,
               cost: cost,
@@ -2606,14 +2765,23 @@ export default function ConferenteView({
       }
     });
 
-    const finalizedItems: AuditItem[] = Object.values(routeItems).map(routeItem => {
-      const checkerItem = session.items.find(i => i.productCode === routeItem.productCode);
+    const matchedCheckerKeys = new Set<string>();
+    const finalizedItems: AuditItem[] = Object.entries(routeItems).map(([key, routeItem]) => {
+      const checkerItem = session.items.find(i =>
+        i.productCode === routeItem.productCode || normalizeProdCode(i.productCode) === key
+      );
       if (checkerItem) {
+        matchedCheckerKeys.add(normalizeProdCode(checkerItem.productCode));
         return {
           ...routeItem,
+          ...checkerItem,
+          productCode: checkerItem.productCode || routeItem.productCode,
+          productDescription: checkerItem.productDescription || routeItem.productDescription,
+          cost: checkerItem.cost || routeItem.cost,
+          fiscalQty: checkerItem.fiscalQty !== undefined ? checkerItem.fiscalQty : routeItem.fiscalQty,
           physicalQty: checkerItem.physicalQty ?? 0,
           rePhysicalQty: (session.status === 'reconferencia' || session.status === 'recontagem_finalizada')
-            ? (checkerItem.rePhysicalQty !== undefined ? checkerItem.rePhysicalQty : checkerItem.physicalQty)
+            ? (checkerItem.rePhysicalQty !== undefined ? checkerItem.rePhysicalQty : (checkerItem.physicalQty ?? 0))
             : checkerItem.rePhysicalQty
         };
       }
@@ -2622,8 +2790,14 @@ export default function ConferenteView({
 
     // Also include any custom items that the checker added which were NOT on the route maps
     session.items.forEach(checkerItem => {
-      if (!routeItems[checkerItem.productCode]) {
-        finalizedItems.push(checkerItem);
+      const key = normalizeProdCode(checkerItem.productCode);
+      if (!routeItems[key] && !matchedCheckerKeys.has(key)) {
+        finalizedItems.push({
+          ...checkerItem,
+          rePhysicalQty: (session.status === 'reconferencia' || session.status === 'recontagem_finalizada')
+            ? (checkerItem.rePhysicalQty !== undefined ? checkerItem.rePhysicalQty : (checkerItem.physicalQty ?? 0))
+            : checkerItem.rePhysicalQty
+        });
       }
     });
 
@@ -3159,9 +3333,10 @@ export default function ConferenteView({
                                 return;
                               }
                               if (isConferindo || isReconferir) {
-                                const matchingAudit = audits.find(a => 
-                                  a.routeMap.toUpperCase() === route.routeMap.toUpperCase() || 
-                                  (a.unifiedMaps && a.unifiedMaps.some(m => m.toUpperCase() === route.routeMap.toUpperCase()))
+                                const matchingAudit = audits.find(a =>
+                                  (a.status === 'em_aberto' || a.status === 'reconferencia' || a.reopeningRequested === true) &&
+                                  (a.routeMap.toUpperCase() === route.routeMap.toUpperCase() ||
+                                   (a.unifiedMaps && a.unifiedMaps.some(m => m.toUpperCase() === route.routeMap.toUpperCase())))
                                 );
                                 if (matchingAudit) {
                                   handleOpenSession(matchingAudit);
@@ -3574,8 +3749,7 @@ export default function ConferenteView({
                   <button
                     type="button"
                     onClick={() => {
-                      setActiveSession(currentInAudits);
-                      setLoadedSessionTime(currentInAudits.updatedAt);
+                      handleOpenSession(currentInAudits);
                     }}
                     className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold text-[10px] uppercase rounded-lg transition shrink-0 shadow-sm"
                   >
@@ -3926,8 +4100,29 @@ export default function ConferenteView({
                                     type="number"
                                     min="0"
                                     placeholder="Informe o recount..."
-                                    value={item.rePhysicalQty !== undefined ? item.rePhysicalQty : (item.physicalQty ?? '')}
-                                    onChange={(e) => handleUpdateProductQty(item.productCode, e.target.value === '' ? 0 : Number(e.target.value))}
+                                    value={
+                                      recountDrafts[`pa_${item.productCode}`] !== undefined
+                                        ? recountDrafts[`pa_${item.productCode}`]
+                                        : (item.rePhysicalQty !== undefined ? item.rePhysicalQty : (item.physicalQty ?? 0))
+                                    }
+                                    onChange={(e) => {
+                                      const raw = e.target.value;
+                                      const draftKey = `pa_${item.productCode}`;
+                                      setRecountDrafts(prev => ({ ...prev, [draftKey]: raw }));
+                                      if (raw.trim() !== '') {
+                                        const parsed = Math.max(0, Number(raw) || 0);
+                                        handleUpdateProductQty(item.productCode, parsed);
+                                      }
+                                    }}
+                                    onBlur={() => {
+                                      const draftKey = `pa_${item.productCode}`;
+                                      setRecountDrafts(prev => {
+                                        if (prev[draftKey] === undefined) return prev;
+                                        const next = { ...prev };
+                                        delete next[draftKey];
+                                        return next;
+                                      });
+                                    }}
                                     className="w-full text-xs bg-white border border-red-300 rounded-lg p-2.5 text-center font-bold focus:outline-none focus:ring-2 focus:ring-red-500 font-sans"
                                     id={`pa-mobile-recount-${item.productCode}`}
                                   />
@@ -3999,8 +4194,29 @@ export default function ConferenteView({
                                     type="number"
                                     min="0"
                                     placeholder="Recount"
-                                    value={item.rePhysicalQty !== undefined ? item.rePhysicalQty : (item.physicalQty ?? '')}
-                                    onChange={(e) => handleUpdateProductQty(item.productCode, e.target.value === '' ? 0 : Number(e.target.value))}
+                                    value={
+                                      recountDrafts[`pa_${item.productCode}`] !== undefined
+                                        ? recountDrafts[`pa_${item.productCode}`]
+                                        : (item.rePhysicalQty !== undefined ? item.rePhysicalQty : (item.physicalQty ?? 0))
+                                    }
+                                    onChange={(e) => {
+                                      const raw = e.target.value;
+                                      const draftKey = `pa_${item.productCode}`;
+                                      setRecountDrafts(prev => ({ ...prev, [draftKey]: raw }));
+                                      if (raw.trim() !== '') {
+                                        const parsed = Math.max(0, Number(raw) || 0);
+                                        handleUpdateProductQty(item.productCode, parsed);
+                                      }
+                                    }}
+                                    onBlur={() => {
+                                      const draftKey = `pa_${item.productCode}`;
+                                      setRecountDrafts(prev => {
+                                        if (prev[draftKey] === undefined) return prev;
+                                        const next = { ...prev };
+                                        delete next[draftKey];
+                                        return next;
+                                      });
+                                    }}
                                     className="w-20 text-xs bg-white border border-red-200 rounded p-1 text-center font-bold focus:outline-none focus:ring-1 focus:ring-red-500 font-sans"
                                     id={`pa-desktop-recount-${item.productCode}`}
                                   />
@@ -4586,10 +4802,35 @@ export default function ConferenteView({
                               min="0"
                               value={
                                 activeSession.status === 'reconferencia'
-                                  ? (asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : (asset.physicalQty ?? 0))
+                                  ? (recountDrafts[`ag_${asset.assetId}`] !== undefined
+                                      ? recountDrafts[`ag_${asset.assetId}`]
+                                      : (asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : (asset.physicalQty ?? 0)))
                                   : (asset.physicalQty === 0 ? '' : asset.physicalQty)
                               }
-                              onChange={(e) => handleUpdateAssetQty(asset.assetId, e.target.value === '' ? 0 : Number(e.target.value))}
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                if (activeSession.status === 'reconferencia') {
+                                  const draftKey = `ag_${asset.assetId}`;
+                                  setRecountDrafts(prev => ({ ...prev, [draftKey]: raw }));
+                                  if (raw.trim() !== '') {
+                                    const parsed = Math.max(0, Number(raw) || 0);
+                                    handleUpdateAssetQty(asset.assetId, parsed);
+                                  }
+                                } else {
+                                  handleUpdateAssetQty(asset.assetId, raw === '' ? 0 : Number(raw));
+                                }
+                              }}
+                              onBlur={() => {
+                                if (activeSession.status === 'reconferencia') {
+                                  const draftKey = `ag_${asset.assetId}`;
+                                  setRecountDrafts(prev => {
+                                    if (prev[draftKey] === undefined) return prev;
+                                    const next = { ...prev };
+                                    delete next[draftKey];
+                                    return next;
+                                  });
+                                }
+                              }}
                               className={`w-16 text-xs text-center font-bold rounded p-1.5 focus:outline-none ${
                                 activeSession.status === 'reconferencia'
                                   ? 'bg-white border border-red-200 focus:ring-1 focus:ring-red-500 font-sans'
@@ -4873,16 +5114,27 @@ export default function ConferenteView({
                 
                 <button
                   type="button"
+                  disabled={isFinishingAudit}
                   onClick={handleFinishPhysicalAudit}
-                  className={`w-full text-white font-bold py-3.5 px-4 rounded-lg shadow-md transition-all flex items-center justify-center space-x-2 text-base cursor-pointer ${
-                    activeSession.status === 'reconferencia' && sessionPhotos.length === 0
-                      ? 'bg-red-400 cursor-not-allowed opacity-80'
-                      : 'bg-emerald-600 hover:bg-emerald-700'
+                  className={`w-full text-white font-bold py-3.5 px-4 rounded-lg shadow-md transition-all flex items-center justify-center space-x-2 text-base ${
+                    isFinishingAudit
+                      ? 'bg-emerald-700/80 cursor-wait opacity-90'
+                      : activeSession.status === 'reconferencia' && sessionPhotos.length === 0
+                        ? 'bg-red-400 cursor-not-allowed opacity-80'
+                        : 'bg-emerald-600 hover:bg-emerald-700 cursor-pointer'
                   }`}
                 >
-                  <UserCheck className="h-5 w-5" />
+                  {isFinishingAudit ? (
+                    <RefreshCw className="h-5 w-5 animate-spin" />
+                  ) : (
+                    <UserCheck className="h-5 w-5" />
+                  )}
                   <span>
-                    {activeSession.status === 'reconferencia' ? 'Enviar Reconferência Física' : 'Enviar Conferência Física'}
+                    {isFinishingAudit
+                      ? 'Sincronizando com a central...'
+                      : activeSession.status === 'reconferencia'
+                        ? 'Enviar Reconferência Física'
+                        : 'Enviar Conferência Física'}
                   </span>
                 </button>
               </div>
@@ -5081,10 +5333,11 @@ export default function ConferenteView({
               </button>
               <button
                 type="button"
+                disabled={isFinishingAudit}
                 onClick={handleConfirmBlitz}
-                className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-xl transition shadow-sm uppercase font-sans text-center"
+                className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-70 text-white text-xs font-bold rounded-xl transition shadow-sm uppercase font-sans text-center cursor-pointer"
               >
-                Finalizar com Blitz
+                {isFinishingAudit ? 'Sincronizando...' : 'Finalizar com Blitz'}
               </button>
             </div>
           </div>

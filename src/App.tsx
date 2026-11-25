@@ -21,9 +21,11 @@ import { ClipboardCheck, ShieldCheck, BarChart3, AlertCircle, Bell, CheckCircle2
 
 export default function App() {
   const lastWriteTime = useRef<number>(0);
+  const lastWriteByKeyRef = useRef<Record<string, number>>({});
   const pendingUpdatesRef = useRef<any>({});
   const pushTimeoutRef = useRef<any>(null);
   const lastSyncAlertTime = useRef<number>(0);
+  const applyDirectDbRef = useRef<(db: any) => void>(() => {});
 
   // Database states loaded from AppStore (direct from live database without stale cache)
   const [users, setUsers] = useState<User[]>(DEFAULT_USERS);
@@ -86,6 +88,13 @@ export default function App() {
   const [returnForecasts, setReturnForecasts] = useState<ReturnForecast[]>([]);
   const [fiscalAlerts, setFiscalAlerts] = useState<FiscalAlert[]>([]);
   const [importedRoutes, setImportedRoutes] = useState<ImportedRoute[]>([]);
+
+  const auditsRef = useRef<AuditSession[]>(audits);
+  const importedRoutesRef = useRef<ImportedRoute[]>(importedRoutes);
+  const driversRef = useRef<Driver[]>(drivers);
+  useEffect(() => { auditsRef.current = audits; }, [audits]);
+  useEffect(() => { importedRoutesRef.current = importedRoutes; }, [importedRoutes]);
+  useEffect(() => { driversRef.current = drivers; }, [drivers]);
 
   // Liga DPO State (5S, Relatos de Segurança, Blitz de Refugo, Declaração de Zero Quebras)
   const [fiveSEntries, setFiveSEntries] = useState<FiveSEntry[]>(() => {
@@ -202,26 +211,32 @@ export default function App() {
   }, []);
 
   // Trata o ciclo de vida do app ao voltar ao primeiro plano (aba visível ou retorno do app minimizado).
-  // Usa forceReconnect() para revalidar os ouvintes onSnapshot (que aproveitam o cache local do IndexedDB sem custos extras)
-  // e busca apenas do servidor local (/api/db) com custo ZERO no Firestore.
+  // Usa forceReconnect() para revalidar os ouvintes onSnapshot apenas se a aba ficou oculta >= 10s,
+  // evitando derrubar conexões saudáveis em trocas rápidas de janela.
   useEffect(() => {
     let hasMounted = false;
+    let lastHiddenAt = 0;
     const handleVisibilityChange = () => {
-      // Ignora o primeiro instante da montagem da página
       if (!hasMounted) {
         hasMounted = true;
         return;
       }
+      if (document.visibilityState === 'hidden') {
+        lastHiddenAt = Date.now();
+        return;
+      }
       if (document.visibilityState === 'visible') {
-        console.log('[App] App voltou ao primeiro plano - verificando conexão em tempo real com Firestore...');
-        forceReconnect();
-        // Apenas busca do servidor local se o Firestore direto não estiver ativo, evitando conflito de cache
+        const hiddenDurationMs = lastHiddenAt > 0 ? Date.now() - lastHiddenAt : 0;
+        if (hiddenDurationMs >= 10000) {
+          console.log('[App] App voltou ao primeiro plano após pausa - verificando conexão em tempo real com Firestore...');
+          forceReconnect();
+        }
         if (!isClientFirebaseActive()) {
           fetch('/api/db')
             .then(res => res.ok ? res.json() : null)
             .then(data => {
               if (data?.success && data?.db) {
-                applyDirectDb(data.db);
+                applyDirectDbRef.current(data.db);
               }
             })
             .catch(() => {});
@@ -229,7 +244,6 @@ export default function App() {
       }
     };
 
-    // Marca como montado após o primeiro frame
     const timer = setTimeout(() => { hasMounted = true; }, 1000);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => {
@@ -369,7 +383,13 @@ export default function App() {
     customManual?: string;
     controleSobras?: ControleSobraItem[];
   }) => {
-    lastWriteTime.current = Date.now();
+    const writeNow = Date.now();
+    lastWriteTime.current = writeNow;
+    Object.keys(updates).forEach((k) => {
+      if ((updates as any)[k] !== undefined) {
+        lastWriteByKeyRef.current[k] = writeNow;
+      }
+    });
     
     // Accumulate the updates atomically
     pendingUpdatesRef.current = {
@@ -546,7 +566,7 @@ export default function App() {
           const normOther = normalizeMapCode(other.routeMap).toUpperCase();
           const otherDate = other.arrivalDate || other.routeDate || other.endTime?.split('T')[0] || other.startTime?.split('T')[0];
           
-          if (aDate && otherDate && aDate !== otherDate) return false;
+          if (!aDate || !otherDate || aDate !== otherDate) return false;
 
           const sameMap = normOther === normMap || (other.unifiedMaps && other.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normMap));
           return sameMap;
@@ -602,24 +622,80 @@ export default function App() {
     return result;
   };
 
+  const isAuditFinalized = (a?: AuditSession | null): boolean => {
+    if (!a) return false;
+    const isFinished =
+      a.status === 'finalizado_ok' ||
+      a.status === 'finalizado_divergente' ||
+      (a as any).pdfDownloaded === true ||
+      (a as any).surplusFlowStatus === 'BAIXADO';
+    return isFinished && !a.reopeningRequested && !a.reopened;
+  };
+
+  const canRegressFinalizedAudit = (existing: AuditSession, incoming: AuditSession): boolean => {
+    if (incoming.reopeningRequested === true) {
+      const reqTs = incoming.reopeningRequestDate || incoming.updatedAt || '';
+      const closeTs = existing.closedAt || existing.endTime || existing.updatedAt || '';
+      return !closeTs || !reqTs || reqTs >= closeTs;
+    }
+    if (incoming.reopened === true) {
+      const reopenTs = incoming.reopenedAt || incoming.updatedAt || '';
+      const closeTs = existing.closedAt || existing.endTime || existing.updatedAt || '';
+      return !closeTs || !reopenTs || reopenTs >= closeTs;
+    }
+    return false;
+  };
+
+  const mergeAuditsPreventRegression = (incomingList: AuditSession[], currentList: AuditSession[]): AuditSession[] => {
+    const cleanedIncoming = cleanAudits(incomingList);
+    if (!currentList || currentList.length === 0) return cleanedIncoming;
+
+    const currentById = new Map<string, AuditSession>();
+    currentList.forEach(a => {
+      if (a && a.id) currentById.set(a.id, a);
+    });
+
+    return cleanedIncoming.map(inc => {
+      const existing = currentById.get(inc.id);
+      if (existing && isAuditFinalized(existing) && !isAuditFinalized(inc)) {
+        if (!canRegressFinalizedAudit(existing, inc)) {
+          return existing;
+        }
+      }
+      return inc;
+    });
+  };
+
   const cleanImportedRoutes = (list: ImportedRoute[], currentAudits?: AuditSession[]): ImportedRoute[] => {
     if (!list) return [];
     const now = new Date().toISOString();
-    const effectiveAudits = currentAudits || audits || [];
+    const effectiveAudits = currentAudits || auditsRef.current || audits || [];
     return list.filter(Boolean).map(r => {
       const normMap = normalizeMapCode(r.routeMap).toUpperCase();
-      const isActiveWorkingStatus = r.status === 'conferindo' || r.status === 'em_analise' || r.status === 'reconferir';
-      const isClosedByAudit = !isActiveWorkingStatus && effectiveAudits.some(a => {
-        if (a.reopeningRequested || a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada' || a.status === 'em_aberto' || a.status === 'reconferencia') return false;
+      const hasActiveAudit = effectiveAudits.some(a => {
+        if (!a) return false;
+        const isPendingOrOpen = a.reopeningRequested || a.reopened || a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada' || a.status === 'em_aberto' || a.status === 'reconferencia';
+        if (!isPendingOrOpen) return false;
         const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
         const matches = aNorm === normMap || (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normMap));
         if (!matches) return false;
         if (r.routeDate) {
-          const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+          const aDate = a.routeDate || a.arrivalDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
           if (aDate && aDate !== r.routeDate) return false;
         }
-        const isCompleted = (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') && !a.reopeningRequested;
-        return isCompleted;
+        return true;
+      });
+
+      const isClosedByAudit = !hasActiveAudit && effectiveAudits.some(a => {
+        if (!isAuditFinalized(a)) return false;
+        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
+        const matches = aNorm === normMap || (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normMap));
+        if (!matches) return false;
+        if (r.routeDate) {
+          const aDate = a.routeDate || a.arrivalDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
+          if (aDate && aDate !== r.routeDate) return false;
+        }
+        return true;
       });
 
       return {
@@ -733,13 +809,13 @@ export default function App() {
   const applyDirectDb = (db: any) => {
     if (!db) return;
 
-    // Protection: If a local write was performed in the last 1.5 seconds, defer remote override to protect local user inputs/imports
-    if (Date.now() - lastWriteTime.current < 1500) {
-      console.log("[AppSync] Ignorando atualização remota temporariamente para proteger escrita local recente.");
-      return;
-    }
+    const now = Date.now();
+    const isKeyLockedLocally = (key: string) => {
+      const lastKeyWrite = lastWriteByKeyRef.current[key] || 0;
+      return now - lastKeyWrite < 1200;
+    };
 
-    if (db.users !== undefined && Array.isArray(db.users)) {
+    if (db.users !== undefined && Array.isArray(db.users) && !isKeyLockedLocally('users')) {
       const isFictitious = (u: User) => {
         const id = (u.id || '').toLowerCase();
         const name = (u.name || '').toLowerCase();
@@ -777,82 +853,92 @@ export default function App() {
       });
     }
 
-    if (db.drivers !== undefined && Array.isArray(db.drivers)) {
+    if (db.drivers !== undefined && Array.isArray(db.drivers) && !isKeyLockedLocally('drivers')) {
+      driversRef.current = db.drivers;
       setDrivers(db.drivers);
     }
 
-    if (db.vehicles !== undefined && Array.isArray(db.vehicles)) {
+    if (db.vehicles !== undefined && Array.isArray(db.vehicles) && !isKeyLockedLocally('vehicles')) {
       setVehicles(db.vehicles);
     }
 
-    if (db.products !== undefined && Array.isArray(db.products)) {
+    if (db.products !== undefined && Array.isArray(db.products) && !isKeyLockedLocally('products')) {
       const repaired = repairProductsList(db.products);
       setProducts(repaired);
     }
 
-    if (db.activeAssets !== undefined && Array.isArray(db.activeAssets)) {
+    if (db.activeAssets !== undefined && Array.isArray(db.activeAssets) && !isKeyLockedLocally('activeAssets')) {
       setActiveAssets(db.activeAssets);
     }
 
-    let activeAudits = audits;
-    if (db.audits !== undefined && Array.isArray(db.audits)) {
-      activeAudits = cleanAudits(db.audits);
+    let activeAudits = auditsRef.current;
+    if (db.audits !== undefined && Array.isArray(db.audits) && !isKeyLockedLocally('audits')) {
+      activeAudits = mergeAuditsPreventRegression(db.audits, auditsRef.current);
+      auditsRef.current = activeAudits;
       setAudits(activeAudits);
     }
 
-    if (db.vales !== undefined && Array.isArray(db.vales)) {
+    if (db.vales !== undefined && Array.isArray(db.vales) && !isKeyLockedLocally('vales')) {
       const cleaned = cleanVales(db.vales);
       setVales(cleaned);
     }
 
-    if (db.empilhadores !== undefined && Array.isArray(db.empilhadores)) {
+    if (db.empilhadores !== undefined && Array.isArray(db.empilhadores) && !isKeyLockedLocally('empilhadores')) {
       const cleaned = cleanEmpilhadores(db.empilhadores);
       setEmpilhadores(cleaned.length > 0 ? cleaned : DEFAULT_EMPILHADORES);
     }
 
-    if (db.carregamentoProcesses !== undefined && Array.isArray(db.carregamentoProcesses)) {
+    if (db.carregamentoProcesses !== undefined && Array.isArray(db.carregamentoProcesses) && !isKeyLockedLocally('carregamentoProcesses') && !isKeyLockedLocally('carregamentos')) {
       setCarregamentos(db.carregamentoProcesses);
-    } else if (db.carregamentos !== undefined && Array.isArray(db.carregamentos)) {
+    } else if (db.carregamentos !== undefined && Array.isArray(db.carregamentos) && !isKeyLockedLocally('carregamentos') && !isKeyLockedLocally('carregamentoProcesses')) {
       setCarregamentos(db.carregamentos);
     }
 
-    if (db.controleSobras !== undefined && Array.isArray(db.controleSobras)) {
+    if (db.controleSobras !== undefined && Array.isArray(db.controleSobras) && !isKeyLockedLocally('controleSobras')) {
       setControleSobras(db.controleSobras);
     }
 
-    if (db.fiveSEntries !== undefined && Array.isArray(db.fiveSEntries)) {
+    if (db.fiveSEntries !== undefined && Array.isArray(db.fiveSEntries) && !isKeyLockedLocally('fiveSEntries')) {
       setFiveSEntries(db.fiveSEntries);
       try { localStorage.setItem('ambev_liga_5s_entries', JSON.stringify(db.fiveSEntries)); } catch (e) {}
     }
 
-    if (db.safetyReports !== undefined && Array.isArray(db.safetyReports)) {
+    if (db.safetyReports !== undefined && Array.isArray(db.safetyReports) && !isKeyLockedLocally('safetyReports')) {
       setSafetyReports(db.safetyReports);
       try { localStorage.setItem('ambev_liga_safety_reports', JSON.stringify(db.safetyReports)); } catch (e) {}
     }
 
-    if (db.blitzEntries !== undefined && Array.isArray(db.blitzEntries)) {
+    if (db.blitzEntries !== undefined && Array.isArray(db.blitzEntries) && !isKeyLockedLocally('blitzEntries')) {
       setBlitzEntries(db.blitzEntries);
       try { localStorage.setItem('ambev_liga_blitz_entries', JSON.stringify(db.blitzEntries)); } catch (e) {}
     }
 
-    if (db.zeroBreakDeclarations !== undefined && Array.isArray(db.zeroBreakDeclarations)) {
+    if (db.zeroBreakDeclarations !== undefined && Array.isArray(db.zeroBreakDeclarations) && !isKeyLockedLocally('zeroBreakDeclarations')) {
       setZeroBreakDeclarations(db.zeroBreakDeclarations);
       try { localStorage.setItem('ambev_liga_break_declarations', JSON.stringify(db.zeroBreakDeclarations)); } catch (e) {}
     }
 
-    if (db.returnForecasts !== undefined && Array.isArray(db.returnForecasts)) {
+    if (db.returnForecasts !== undefined && Array.isArray(db.returnForecasts) && !isKeyLockedLocally('returnForecasts')) {
       const cleaned = cleanReturnForecasts(db.returnForecasts);
       setReturnForecasts(cleaned);
     }
 
-    if (db.fiscalAlerts !== undefined && Array.isArray(db.fiscalAlerts)) {
+    if (db.fiscalAlerts !== undefined && Array.isArray(db.fiscalAlerts) && !isKeyLockedLocally('fiscalAlerts')) {
       setFiscalAlerts(db.fiscalAlerts);
     }
 
-    // Smart Merge Imported Routes
-    if (db.importedRoutes !== undefined) {
+    // Smart Merge Imported Routes using fresh auditsRef
+    if (db.importedRoutes !== undefined && !isKeyLockedLocally('importedRoutes')) {
       const remoteCleaned = cleanImportedRoutes(db.importedRoutes, activeAudits);
+      importedRoutesRef.current = remoteCleaned;
       setImportedRoutes(remoteCleaned);
+    } else if (db.audits !== undefined && !isKeyLockedLocally('importedRoutes') && importedRoutesRef.current.length > 0) {
+      const reconciledRoutes = cleanImportedRoutes(importedRoutesRef.current, activeAudits);
+      const hasStatusChange = reconciledRoutes.some((r, idx) => r.status !== importedRoutesRef.current[idx]?.status);
+      if (hasStatusChange) {
+        importedRoutesRef.current = reconciledRoutes;
+        setImportedRoutes(reconciledRoutes);
+      }
     }
 
     if (db.audit_logs || db.auditLogs) {
@@ -860,11 +946,12 @@ export default function App() {
       setAuditLogs(logs);
     }
 
-    if (db.customManual !== undefined) {
+    if (db.customManual !== undefined && !isKeyLockedLocally('customManual')) {
       const manualContent = typeof db.customManual === 'string' ? db.customManual : db.customManual?.html || '';
       setCustomManualHTML(manualContent);
     }
   };
+  applyDirectDbRef.current = applyDirectDb;
 
   // Immediate flush of pending database updates on page reload / unload
   useEffect(() => {
@@ -954,6 +1041,31 @@ export default function App() {
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
     let pendingSnapshotTimeout: any = null;
+    let pendingSnapshotDb: Record<string, any> = {};
+
+    const flushPendingSnapshots = () => {
+      pendingSnapshotTimeout = null;
+      const now = Date.now();
+      const readyPayload: Record<string, any> = {};
+      const stillLockedPayload: Record<string, any> = {};
+
+      Object.keys(pendingSnapshotDb).forEach((key) => {
+        const lastKeyWrite = lastWriteByKeyRef.current[key] || 0;
+        if (now - lastKeyWrite < 1200) {
+          stillLockedPayload[key] = pendingSnapshotDb[key];
+        } else {
+          readyPayload[key] = pendingSnapshotDb[key];
+        }
+      });
+
+      pendingSnapshotDb = stillLockedPayload;
+      if (Object.keys(readyPayload).length > 0) {
+        applyDirectDbRef.current(readyPayload);
+      }
+      if (Object.keys(pendingSnapshotDb).length > 0) {
+        pendingSnapshotTimeout = setTimeout(flushPendingSnapshots, 600);
+      }
+    };
 
     const initSubscription = () => {
       if (unsubscribe) {
@@ -962,20 +1074,29 @@ export default function App() {
       if (isClientFirebaseActive()) {
         console.log("[ClientFirebase] Inicializando sincronização em tempo real nativa com Firestore (Plano Blaze)...");
         unsubscribe = subscribeToFirestore((db) => {
-          // If there was a recent local write on this client, schedule applying the snapshot after the cooldown
-          // so concurrent remote changes or server confirmations are never dropped
-          if (Date.now() - lastWriteTime.current < 1500) {
-            if (pendingSnapshotTimeout) clearTimeout(pendingSnapshotTimeout);
-            pendingSnapshotTimeout = setTimeout(() => {
-              applyDirectDb(db);
-            }, 1600);
-            return;
+          if (!db || typeof db !== 'object') return;
+          const now = Date.now();
+          const immediatePayload: Record<string, any> = {};
+          let hasDeferred = false;
+
+          Object.keys(db).forEach((key) => {
+            const lastKeyWrite = lastWriteByKeyRef.current[key] || 0;
+            if (now - lastKeyWrite < 1200) {
+              pendingSnapshotDb[key] = db[key];
+              hasDeferred = true;
+            } else {
+              immediatePayload[key] = db[key];
+              delete pendingSnapshotDb[key];
+            }
+          });
+
+          if (Object.keys(immediatePayload).length > 0) {
+            applyDirectDbRef.current(immediatePayload);
           }
-          if (pendingSnapshotTimeout) {
-            clearTimeout(pendingSnapshotTimeout);
-            pendingSnapshotTimeout = null;
+
+          if (hasDeferred && !pendingSnapshotTimeout) {
+            pendingSnapshotTimeout = setTimeout(flushPendingSnapshots, 1300);
           }
-          applyDirectDb(db);
         });
       }
     };
@@ -990,7 +1111,7 @@ export default function App() {
     const handleForceApply = (e: any) => {
       if (e.detail) {
         console.log("[AppSync] Forçando aplicação manual de dados do banco...");
-        applyDirectDb(e.detail);
+        applyDirectDbRef.current(e.detail);
       }
     };
 
@@ -1229,21 +1350,31 @@ export default function App() {
 
   const handleSaveAudits = (newAudits: AuditSession[]) => {
     const timestamp = new Date().toISOString();
+    const prevAudits = auditsRef.current || audits;
     const updatedAudits = newAudits.map(newAudit => {
-      const oldAudit = audits.find(a => a.id === newAudit.id);
+      const oldAudit = prevAudits.find(a => a.id === newAudit.id);
+      if (oldAudit && isAuditFinalized(oldAudit) && !isAuditFinalized(newAudit) && !canRegressFinalizedAudit(oldAudit, newAudit)) {
+        return oldAudit;
+      }
       const oldFunctional = oldAudit ? { ...oldAudit, updatedAt: undefined, lastUpdatedBy: undefined } : null;
       const newFunctional = { ...newAudit, updatedAt: undefined, lastUpdatedBy: undefined };
       if (!oldFunctional || JSON.stringify(oldFunctional) !== JSON.stringify(newFunctional)) {
+        const hasFreshPreStamp = Boolean(
+          newAudit.updatedAt &&
+          (!oldAudit?.updatedAt || newAudit.updatedAt > oldAudit.updatedAt) &&
+          Date.now() - new Date(newAudit.updatedAt).getTime() < 10000
+        );
         return {
           ...newAudit,
-          updatedAt: timestamp,
-          lastUpdatedBy: currentUser?.name || 'Sistema'
+          updatedAt: hasFreshPreStamp ? newAudit.updatedAt : timestamp,
+          lastUpdatedBy: (hasFreshPreStamp && newAudit.lastUpdatedBy) ? newAudit.lastUpdatedBy : (currentUser?.name || 'Sistema')
         };
       }
       return newAudit;
     });
 
     const cleaned = cleanAudits(updatedAudits);
+    auditsRef.current = cleaned;
     setAudits(cleaned);
     pushDatabaseToServer({ audits: cleaned });
   };
@@ -1261,25 +1392,32 @@ export default function App() {
 
   const handleSaveImportedRoutes = (newRoutes: ImportedRoute[]) => {
     const timestamp = new Date().toISOString();
+    const prevRoutes = importedRoutesRef.current || importedRoutes;
     const updatedRoutes = newRoutes.map(newRoute => {
       const newMapKey = normalizeMapCode(newRoute.routeMap).toUpperCase();
       const newDate = newRoute.routeDate || '';
-      const oldRoute = importedRoutes.find(r => 
+      const oldRoute = prevRoutes.find(r => 
         normalizeMapCode(r.routeMap).toUpperCase() === newMapKey &&
         (r.routeDate || '') === newDate
       );
       const oldFunctional = oldRoute ? { ...oldRoute, updatedAt: undefined } : null;
       const newFunctional = { ...newRoute, updatedAt: undefined };
       if (!oldFunctional || JSON.stringify(oldFunctional) !== JSON.stringify(newFunctional)) {
+        const hasFreshPreStamp = Boolean(
+          newRoute.updatedAt &&
+          (!oldRoute?.updatedAt || newRoute.updatedAt > oldRoute.updatedAt) &&
+          Date.now() - new Date(newRoute.updatedAt).getTime() < 10000
+        );
         return {
           ...newRoute,
-          updatedAt: timestamp
+          updatedAt: hasFreshPreStamp ? newRoute.updatedAt : timestamp
         };
       }
       return newRoute;
     });
 
-    const cleaned = cleanImportedRoutes(updatedRoutes);
+    const cleaned = cleanImportedRoutes(updatedRoutes, auditsRef.current);
+    importedRoutesRef.current = cleaned;
     setImportedRoutes(cleaned);
     pushDatabaseToServer({ importedRoutes: cleaned });
   };
