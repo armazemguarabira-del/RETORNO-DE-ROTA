@@ -208,6 +208,15 @@ if (typeof window !== 'undefined') {
         sessionStorage.removeItem(k);
       }
     }
+    if (typeof indexedDB !== 'undefined' && typeof indexedDB.databases === 'function') {
+      indexedDB.databases().then((dbs) => {
+        for (const dbInfo of dbs) {
+          if (dbInfo.name && dbInfo.name.startsWith('firestore')) {
+            try { indexedDB.deleteDatabase(dbInfo.name); } catch {}
+          }
+        }
+      }).catch(() => {});
+    }
   } catch (e) {
     console.warn("Auto cache purge encountered error:", e);
   }

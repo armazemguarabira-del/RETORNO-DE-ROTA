@@ -2,8 +2,7 @@ import { initializeApp, getApps, getApp, deleteApp } from "firebase/app";
 import {
   getFirestore,
   initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
+  memoryLocalCache,
   doc,
   getDoc,
   getDocs,
@@ -580,18 +579,11 @@ export function getClientFirestore() {
     const app = getApps().length === 0 ? initializeApp(config) : getApp();
     const dbId = (config.firestoreDatabaseId && config.firestoreDatabaseId !== "(default)") ? config.firestoreDatabaseId : undefined;
 
-    // Enable IndexedDB persistent local cache with multi-tab support
-    // This allows page reloads and multiple tabs to read from local cache with 0 Firestore read consumption!
+    // Use memoryLocalCache so normal tabs never serve stale IndexedDB snapshots across reloads or multi-tab locks
     try {
-      if (typeof window !== "undefined" && typeof indexedDB !== "undefined") {
-        firestoreInstance = initializeFirestore(app, {
-          localCache: persistentLocalCache({
-            tabManager: persistentMultipleTabManager()
-          })
-        }, dbId);
-      } else {
-        firestoreInstance = dbId ? getFirestore(app, dbId) : getFirestore(app);
-      }
+      firestoreInstance = initializeFirestore(app, {
+        localCache: memoryLocalCache()
+      }, dbId);
     } catch (errInit) {
       // Fallback if already initialized in another mode
       firestoreInstance = dbId ? getFirestore(app, dbId) : getFirestore(app);
@@ -621,7 +613,7 @@ export async function saveDocToFirestore(colName: string, item: any): Promise<bo
     const newJson = canonicalJson(cleanItem);
 
     const docRef = doc(db, targetCol, docId);
-    await setDoc(docRef, cleanItem, { merge: true });
+    await setDoc(docRef, cleanItem);
     colCache.set(docId, newJson);
     return true;
   } catch (err) {
@@ -637,7 +629,7 @@ export async function saveDocToFirestore(colName: string, item: any): Promise<bo
       const cleanItem = JSON.parse(JSON.stringify(item));
       cleanItem.id = docId;
       const docRef = doc(db, targetCol, docId);
-      await setDoc(docRef, cleanItem, { merge: true });
+      await setDoc(docRef, cleanItem);
       getColCache(targetCol).set(docId, canonicalJson(cleanItem));
       persistColCache(targetCol);
       return true;
@@ -749,7 +741,7 @@ export async function saveDocsToFirestore(colName: string, items: any[], syncDel
       chunk.forEach(op => {
         const docRef = doc(db, targetCol, op.id);
         if (op.type === 'set') {
-          batch.set(docRef, op.data, { merge: true });
+          batch.set(docRef, op.data);
         } else {
           batch.delete(docRef);
         }
@@ -813,7 +805,7 @@ export async function saveTargetedBatchToFirestore(
         const batch = writeBatch(db);
         chunk.forEach(op => {
           const docRef = doc(db, op.targetCol, op.docId);
-          batch.set(docRef, op.data, { merge: true });
+          batch.set(docRef, op.data);
         });
         await batch.commit();
 

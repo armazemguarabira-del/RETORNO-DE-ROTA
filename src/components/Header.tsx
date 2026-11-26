@@ -95,16 +95,33 @@ export default function Header({
         }
       }
       localStorage.removeItem('logiroute_cached_app_db');
+      localStorage.removeItem('logiroute_cached_controle_sobras');
+      localStorage.removeItem('conferente_active_session_id');
+      localStorage.removeItem('logiroute_acknowledged_sent_audits');
       for (let i = sessionStorage.length - 1; i >= 0; i--) {
         const k = sessionStorage.key(i);
         if (k && k.startsWith('logiroute_doc_cache_')) {
           sessionStorage.removeItem(k);
         }
       }
+      if (typeof indexedDB !== 'undefined' && typeof indexedDB.databases === 'function') {
+        const dbs = await indexedDB.databases();
+        for (const dbInfo of dbs) {
+          if (dbInfo.name && dbInfo.name.startsWith('firestore')) {
+            try { indexedDB.deleteDatabase(dbInfo.name); } catch {}
+          }
+        }
+      }
     } catch (e) {
       console.warn("Erro ao limpar cache:", e);
     }
-    window.location.reload();
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set('_cb', String(Date.now()));
+      window.location.replace(url.toString());
+    } catch {
+      window.location.reload();
+    }
   };
   const [activeDbProjectId, setActiveDbProjectId] = useState<string>(() => {
     return getActiveFirebaseConfig()?.projectId || 'banco-oficial';

@@ -329,31 +329,42 @@ export class ImageDB {
    */
   static async clearPhotosByAudit(auditId: string): Promise<void> {
     const db = await this.getDB();
-    const photos = await this.getLocalPhotosByAudit(auditId);
+    let photos: PhotoRecord[] = [];
+    try {
+      photos = await Promise.race([
+        this.getLocalPhotosByAudit(auditId),
+        new Promise<PhotoRecord[]>((resolve) => setTimeout(() => resolve([]), 1500))
+      ]);
+    } catch {
+      photos = [];
+    }
     
-    // 1. Delete locally
+    // 1. Delete locally (bounded to 1.5s so IndexedDB locks never hang finalization)
     if (this.isInMemoryFallback || !db) {
       photos.forEach(p => {
         this.memoryStore.delete(p.id);
       });
     } else {
       try {
-        await new Promise<void>((resolve) => {
-          const transaction = db.transaction(STORE_NAME, 'readwrite');
-          const store = transaction.objectStore(STORE_NAME);
-          let count = 0;
-          if (photos.length === 0) {
-            resolve();
-            return;
-          }
-          photos.forEach(p => {
-            const req = store.delete(p.id);
-            req.onsuccess = req.onerror = () => {
-              count++;
-              if (count === photos.length) resolve();
-            };
-          });
-        });
+        await Promise.race([
+          new Promise<void>((resolve) => {
+            const transaction = db.transaction(STORE_NAME, 'readwrite');
+            const store = transaction.objectStore(STORE_NAME);
+            let count = 0;
+            if (photos.length === 0) {
+              resolve();
+              return;
+            }
+            photos.forEach(p => {
+              const req = store.delete(p.id);
+              req.onsuccess = req.onerror = () => {
+                count++;
+                if (count === photos.length) resolve();
+              };
+            });
+          }),
+          new Promise<void>((resolve) => setTimeout(resolve, 1500))
+        ]);
       } catch (err) {
         photos.forEach(p => {
           this.memoryStore.delete(p.id);
@@ -361,13 +372,21 @@ export class ImageDB {
       }
     }
 
-    // 2. Delete on the server
-    for (const p of photos) {
-      try {
-        await fetch(`/api/photos/${p.id}`, { method: 'DELETE' });
-      } catch (e) {
-        console.log('Server file deletion bypassed in background.');
-      }
+    // 2. Delete on the server in parallel with strict per-request timeout
+    if (photos.length > 0) {
+      await Promise.allSettled(
+        photos.map(async (p) => {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 2000);
+          try {
+            await fetch(`/api/photos/${p.id}`, { method: 'DELETE', signal: controller.signal });
+          } catch (e) {
+            console.log('Server file deletion bypassed in background.');
+          } finally {
+            clearTimeout(timer);
+          }
+        })
+      );
     }
   }
 
@@ -376,7 +395,15 @@ export class ImageDB {
    * Only fetches from the server if local cache has no photos for this audit (or forceRefresh is true).
    */
   static async getPhotosByAudit(auditId: string, forceRefresh: boolean = false): Promise<PhotoRecord[]> {
-    const localPhotos = await this.getLocalPhotosByAudit(auditId);
+    let localPhotos: PhotoRecord[] = [];
+    try {
+      localPhotos = await Promise.race([
+        this.getLocalPhotosByAudit(auditId),
+        new Promise<PhotoRecord[]>((resolve) => setTimeout(() => resolve([]), 1500))
+      ]);
+    } catch {
+      localPhotos = [];
+    }
     if (!forceRefresh && localPhotos && localPhotos.length > 0) {
       return localPhotos;
     }
@@ -385,7 +412,7 @@ export class ImageDB {
     const serverFetchWithTimeout = new Promise<PhotoRecord[]>((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error('Server photo fetch timed out'));
-      }, 1500);
+      }, 2000);
 
       this.fetchPhotosFromServer(auditId)
         .then((serverPhotos) => {

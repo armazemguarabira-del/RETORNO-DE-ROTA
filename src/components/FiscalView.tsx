@@ -3693,17 +3693,19 @@ export default function FiscalView({
       const currentInAudits = audits.find(a => a.id === activeSession.id);
       if (currentInAudits) {
         const isFinalizedRemotely =
-          currentInAudits.status === 'finalizado_ok' ||
-          currentInAudits.status === 'finalizado_divergente';
+          (currentInAudits.status === 'finalizado_ok' ||
+           currentInAudits.status === 'finalizado_divergente') &&
+          !currentInAudits.reopened &&
+          !currentInAudits.reopeningRequested;
         if (isFinalizedRemotely && !isFinalizing) {
           setActiveSession(null);
           setLoadedSessionTime(undefined);
           alert(`O mapa ${currentInAudits.routeMap} já foi finalizado e fechado em outro dispositivo ou aba.`);
           return;
         }
-        // Construct a merged version that preserves locally typed fiscal quantities to avoid overwrites
-        const mergedItems = currentInAudits.items.map(item => {
-          const localItem = activeSession.items.find(i => i.productCode === item.productCode);
+        // Construct a merged version that preserves locally typed fiscal quantities and locally added items
+        const mergedItems: AuditItem[] = (currentInAudits.items || []).map(item => {
+          const localItem = (activeSession.items || []).find(i => i.productCode === item.productCode);
           return {
             ...item,
             fiscalQty: localItem && localItem.fiscalQty !== undefined ? localItem.fiscalQty : item.fiscalQty,
@@ -3711,9 +3713,15 @@ export default function FiscalView({
             recolhaQty: localItem && localItem.recolhaQty !== undefined ? localItem.recolhaQty : item.recolhaQty
           };
         });
+        // Preserve any items manually added in activeSession not yet synced into currentInAudits
+        (activeSession.items || []).forEach(localItem => {
+          if (!mergedItems.some(i => i.productCode === localItem.productCode)) {
+            mergedItems.push(localItem);
+          }
+        });
 
-        const mergedAssets = currentInAudits.assets.map(asset => {
-          const localAsset = activeSession.assets.find(a => a.assetId === asset.assetId);
+        const mergedAssets = (currentInAudits.assets || []).map(asset => {
+          const localAsset = (activeSession.assets || []).find(a => a.assetId === asset.assetId);
           return {
             ...asset,
             fiscalQty: localAsset && localAsset.fiscalQty !== undefined ? localAsset.fiscalQty : asset.fiscalQty,
@@ -4323,32 +4331,31 @@ export default function FiscalView({
     // If reopening was requested and pending approval, do not show in reconciliation queue yet
     if (a.reopeningRequested) return false;
 
-    // If PDF was downloaded or status is already finalized or surplus status is BAIXADO
-    if (a.pdfDownloaded || a.surplusFlowStatus === 'BAIXADO') return false;
-    if (a.status === 'finalizado_ok' || a.status === 'finalizado_divergente') return false;
-
     // Must be in conferido_fisico or recontagem_finalizada to be conciliated
     if (a.status !== 'conferido_fisico' && a.status !== 'recontagem_finalizada') return false;
 
-    // Exclude if another audit session for the same map and date is ALREADY finalized
+    // If PDF was downloaded or surplus status is BAIXADO (unless explicitly reopened and returned for reconciliation)
+    if (!a.reopened && (a.pdfDownloaded || a.surplusFlowStatus === 'BAIXADO')) return false;
+
+    // Exclude if another non-reopened audit session for the same map and date is ALREADY finalized
     const normA = normalizeMapCode(a.routeMap).toUpperCase();
     const aDate = a.routeDate || a.arrivalDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
-    const hasAlreadyFinished = audits.some(other => {
-      if (other.id === a.id) return false;
-      const isFinished = (other.status === 'finalizado_ok' || other.status === 'finalizado_divergente' || (other as any).pdfDownloaded === true || (other as any).surplusFlowStatus === 'BAIXADO') && !other.reopeningRequested;
-      if (!isFinished) return false;
-
-      const normOther = normalizeMapCode(other.routeMap).toUpperCase();
-      const otherDate = other.routeDate || other.arrivalDate || other.endTime?.split('T')[0] || other.startTime?.split('T')[0];
-      if (!aDate || !otherDate || aDate !== otherDate) return false;
-      const sameMap = normOther === normA || (other.unifiedMaps && other.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normA));
-      return sameMap;
-    });
-
-    if (hasAlreadyFinished) return false;
-
-    // Also exclude if the corresponding importedRoute(s) for this map/date are already marked fechado (unless explicitly reopened)
     if (!a.reopened) {
+      const hasAlreadyFinished = audits.some(other => {
+        if (other.id === a.id) return false;
+        const isFinished = (other.status === 'finalizado_ok' || other.status === 'finalizado_divergente' || (other as any).pdfDownloaded === true || (other as any).surplusFlowStatus === 'BAIXADO') && !other.reopeningRequested && !other.reopened;
+        if (!isFinished) return false;
+
+        const normOther = normalizeMapCode(other.routeMap).toUpperCase();
+        const otherDate = other.routeDate || other.arrivalDate || other.endTime?.split('T')[0] || other.startTime?.split('T')[0];
+        if (!aDate || !otherDate || aDate !== otherDate) return false;
+        const sameMap = normOther === normA || (other.unifiedMaps && other.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normA));
+        return sameMap;
+      });
+
+      if (hasAlreadyFinished) return false;
+
+      // Also exclude if the corresponding importedRoute(s) for this map/date are already marked fechado (unless explicitly reopened)
       const targetMaps = (a.unifiedMaps && a.unifiedMaps.length > 0)
         ? a.unifiedMaps.map(m => normalizeMapCode(m).toUpperCase())
         : (a.routeMap ? a.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase()) : [normA]);
@@ -4407,7 +4414,7 @@ export default function FiscalView({
 
     const standaloneActiveAudits = audits.filter(a => {
       if (a.status !== 'em_aberto' && a.status !== 'reconferencia') return false;
-      if (a.pdfDownloaded || a.surplusFlowStatus === 'BAIXADO') return false;
+      if (!a.reopened && (a.pdfDownloaded || a.surplusFlowStatus === 'BAIXADO')) return false;
       const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
       const isDirectlyInWorking = workingRoutes.some(r => normalizeMapCode(r.routeMap).toUpperCase() === aNorm);
       return !isDirectlyInWorking;
@@ -5663,7 +5670,7 @@ export default function FiscalView({
                 details: `Motivo da Reabertura: ${note}`
               }
             ];
-            updatedTargetAudit = {
+              updatedTargetAudit = {
               ...audit,
               status: 'conferido_fisico' as const,
               reopeningRequested: false,
@@ -5673,6 +5680,8 @@ export default function FiscalView({
               reopeningJustification: note,
               pdfDownloaded: false,
               surplusFlowStatus: undefined,
+              surplusActionStatus: undefined,
+              deficitActionStatus: undefined,
               financeiroCiente: false,
               closedAt: undefined,
               baixaConcluida: false,
@@ -5718,6 +5727,15 @@ export default function FiscalView({
           });
         }
 
+        // Apply state & lock local write timestamps immediately before Firestore async flush
+        onSaveAudits(updatedAudits);
+        if (onSaveImportedRoutes && importedRoutes) {
+          onSaveImportedRoutes(nextRoutes);
+        }
+        if (onSaveAlerts) {
+          onSaveAlerts(updatedAlerts);
+        }
+
         if (isClientFirebaseActive() && updatedTargetAudit) {
           const batchOps: Array<{ colName: string; item: any }> = [
             { colName: 'audits', item: updatedTargetAudit },
@@ -5725,14 +5743,6 @@ export default function FiscalView({
           ];
           matchedUpdatedRoutes.forEach(r => batchOps.push({ colName: 'importedRoutes', item: r }));
           await saveTargetedBatchToFirestore(batchOps, 6000);
-        }
-
-        onSaveAudits(updatedAudits);
-        if (onSaveImportedRoutes && importedRoutes) {
-          onSaveImportedRoutes(nextRoutes);
-        }
-        if (onSaveAlerts) {
-          onSaveAlerts(updatedAlerts);
         }
 
         const currentSelected = updatedAudits.find(a => a.id === auditId);
@@ -5916,23 +5926,32 @@ export default function FiscalView({
     if (photoUrl.startsWith('data:')) {
       return photoUrl;
     }
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000);
-      const res = await fetch(photoUrl, { signal: controller.signal });
-      clearTimeout(timeoutId);
-      if (!res.ok) throw new Error(`HTTP error ${res.status}`);
-      const blob = await res.blob();
-      return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result as string);
-        reader.onerror = () => resolve(null);
-        reader.readAsDataURL(blob);
-      });
-    } catch (err) {
-      console.warn(`Error converting URL to base64: ${photoUrl}`, err);
-      return null;
-    }
+    const controller = new AbortController();
+    const timeoutPromise = new Promise<null>((resolve) => {
+      setTimeout(() => {
+        controller.abort();
+        resolve(null);
+      }, 3500);
+    });
+
+    const workPromise = (async (): Promise<string | null> => {
+      try {
+        const res = await fetch(photoUrl, { signal: controller.signal });
+        if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+        const blob = await res.blob();
+        return await new Promise<string | null>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = () => resolve(null);
+          reader.readAsDataURL(blob);
+        });
+      } catch (err) {
+        console.warn(`Error converting URL to base64: ${photoUrl}`, err);
+        return null;
+      }
+    })();
+
+    return Promise.race([workPromise, timeoutPromise]);
   };
 
   const downloadSingleAuditPDF = async (audit: AuditSession, returnDoc: boolean = false): Promise<any> => {
@@ -5940,12 +5959,15 @@ export default function FiscalView({
       // Load photos from ImageDB
       const photos = await ImageDB.getPhotosByAudit(audit.id);
       
-      const arrivalDateStr = audit.arrivalDate || new Date().toISOString().split('T')[0];
-      const [year, month, day] = arrivalDateStr.split('-');
-      const formattedDate = `${day}-${month}-${year}`;
+      const rawArrival = String(audit.arrivalDate || new Date().toISOString().split('T')[0]).trim();
+      const formattedDate = rawArrival.includes('-') && rawArrival.split('-').length === 3
+        ? (() => { const [year, month, day] = rawArrival.split('-'); return `${day}-${month}-${year}`; })()
+        : rawArrival.replace(/\//g, '-');
       
-      // Naming convention: 11111 - OXO0542 - 05-07-2026.pdf
-      const filename = `${audit.routeMap} - ${audit.plate} - ${formattedDate}.pdf`;
+      // Naming convention: 11111 - OXO0542 - 05-07-2026.pdf (sanitize any slashes from unified/custom names)
+      const safeMapName = String(audit.routeMap || 'MAPA').replace(/[\/\\:*?"<>|]/g, '_');
+      const safePlateName = String(audit.plate || 'SEM_PLACA').replace(/[\/\\:*?"<>|]/g, '_');
+      const filename = `${safeMapName} - ${safePlateName} - ${formattedDate}.pdf`;
       
       const doc = new jsPDF();
       
@@ -6038,11 +6060,12 @@ export default function FiscalView({
       let missingVal = 0;
       let surplusVal = 0;
       
-      audit.items?.forEach(item => {
-        const p = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
-        const f = item.fiscalQty ?? 0;
-        const comodato = item.comodatoQty ?? 0;
-        const recolha = item.recolhaQty ?? 0;
+      (audit.items || []).forEach(item => {
+        if (!item) return;
+        const p = Number(item.rePhysicalQty !== undefined ? item.rePhysicalQty : (item.physicalQty ?? 0)) || 0;
+        const f = Number(item.fiscalQty ?? 0) || 0;
+        const comodato = Number(item.comodatoQty ?? 0) || 0;
+        const recolha = Number(item.recolhaQty ?? 0) || 0;
         const diff = (p + comodato - recolha) - f;
         if (diff < 0) {
           missingQty += Math.abs(diff);
@@ -6054,12 +6077,13 @@ export default function FiscalView({
       });
 
       // Do NOT count exempt assets (only Chapatex and Pallet) as financial discrepancy for closing status, but keep in statistics
-      audit.assets?.forEach(asset => {
+      (audit.assets || []).forEach(asset => {
+        if (!asset) return;
         const isExempt = isExemptAsset(asset.assetId, asset.assetName);
-        const p = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
-        const f = asset.fiscalQty ?? 0;
-        const comodato = asset.comodatoQty ?? 0;
-        const recolha = asset.recolhaQty ?? 0;
+        const p = Number(asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : (asset.physicalQty ?? 0)) || 0;
+        const f = Number(asset.fiscalQty ?? 0) || 0;
+        const comodato = Number(asset.comodatoQty ?? 0) || 0;
+        const recolha = Number(asset.recolhaQty ?? 0) || 0;
         const diff = (p + comodato - recolha) - f;
         const unitCost = getAssetUnitCost(asset.assetId, asset.assetName, asset.cost);
         if (diff < 0) {
@@ -6104,18 +6128,19 @@ export default function FiscalView({
         
         doc.setFont("Helvetica", "normal");
         doc.setTextColor(51, 65, 85);
-        audit.items.forEach(item => {
+        (audit.items || []).forEach(item => {
+          if (!item) return;
           checkPageBreak(8);
-          const physicalVal = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
-          const fiscalVal = item.fiscalQty ?? 0;
-          const comodato = item.comodatoQty ?? 0;
-          const recolha = item.recolhaQty ?? 0;
+          const physicalVal = Number(item.rePhysicalQty !== undefined ? item.rePhysicalQty : (item.physicalQty ?? 0)) || 0;
+          const fiscalVal = Number(item.fiscalQty ?? 0) || 0;
+          const comodato = Number(item.comodatoQty ?? 0) || 0;
+          const recolha = Number(item.recolhaQty ?? 0) || 0;
           const diff = (physicalVal + comodato - recolha) - fiscalVal;
           const diffText = diff > 0 ? `+${diff}` : `${diff}`;
           
           doc.setFontSize(7.5);
-          doc.text(`${item.productCode}`, 16, currentY + 4.5);
-          doc.text(`${(item.productDescription || '').substring(0, 48)}`, 32, currentY + 4.5);
+          doc.text(`${item.productCode || 'N/A'}`, 16, currentY + 4.5);
+          doc.text(`${String(item.productDescription || '').substring(0, 48)}`, 32, currentY + 4.5);
           doc.text(`${physicalVal} SKU`, 125, currentY + 4.5);
           doc.text(`${fiscalVal} SKU`, 145, currentY + 4.5);
           
@@ -6158,14 +6183,15 @@ export default function FiscalView({
         
         doc.setFont("Helvetica", "normal");
         doc.setTextColor(51, 65, 85);
-        audit.assets.forEach(asset => {
+        (audit.assets || []).forEach(asset => {
+          if (!asset) return;
           checkPageBreak(8);
           const code = getAssetCode(asset.assetId, asset.assetName);
           const isExempt = isExemptAsset(asset.assetId, asset.assetName);
-          const physicalVal = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
-          const fiscalVal = asset.fiscalQty ?? 0;
-          const comodato = asset.comodatoQty ?? 0;
-          const recolha = asset.recolhaQty ?? 0;
+          const physicalVal = Number(asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : (asset.physicalQty ?? 0)) || 0;
+          const fiscalVal = Number(asset.fiscalQty ?? 0) || 0;
+          const comodato = Number(asset.comodatoQty ?? 0) || 0;
+          const recolha = Number(asset.recolhaQty ?? 0) || 0;
           const diff = (physicalVal + comodato - recolha) - fiscalVal;
           let diffText = diff > 0 ? `+${diff}` : `${diff}`;
           
@@ -6174,8 +6200,8 @@ export default function FiscalView({
           }
           
           doc.setFontSize(7.5);
-          doc.text(`${code}`, 16, currentY + 4.5);
-          doc.text(`${asset.assetName || getAssetCanonicalName(code)}`, 36, currentY + 4.5);
+          doc.text(`${code || 'N/A'}`, 16, currentY + 4.5);
+          doc.text(`${String(asset.assetName || getAssetCanonicalName(code) || 'Ativo')}`, 36, currentY + 4.5);
           doc.text(`${physicalVal} cx/un`, 125, currentY + 4.5);
           doc.text(`${fiscalVal} cx/un`, 145, currentY + 4.5);
           
@@ -6220,12 +6246,13 @@ export default function FiscalView({
         
         doc.setFont("Helvetica", "normal");
         doc.setTextColor(51, 65, 85);
-        audit.refugos.forEach(ref => {
+        (audit.refugos || []).forEach(ref => {
+          if (!ref) return;
           checkPageBreak(8);
           doc.setFontSize(7.5);
-          doc.text(`${ref.assetName}`, 16, currentY + 4.5);
-          doc.text(`${ref.reason}`, 75, currentY + 4.5);
-          doc.text(`${ref.qty} un`, 160, currentY + 4.5);
+          doc.text(`${String(ref.assetName || 'Ativo').substring(0, 35)}`, 16, currentY + 4.5);
+          doc.text(`${String(ref.reason || 'Avaria').substring(0, 48)}`, 75, currentY + 4.5);
+          doc.text(`${Number(ref.qty) || 0} un`, 160, currentY + 4.5);
           
           doc.setDrawColor(241, 245, 249);
           doc.line(14, currentY + 6, 196, currentY + 6);
@@ -6256,20 +6283,23 @@ export default function FiscalView({
         
         doc.setFont("Helvetica", "normal");
         doc.setTextColor(51, 65, 85);
-        audit.history.forEach(hist => {
-          const timeText = new Date(hist.timestamp).toLocaleString('pt-BR');
+        (audit.history || []).forEach(hist => {
+          if (!hist) return;
+          const timeText = hist.timestamp ? new Date(hist.timestamp).toLocaleString('pt-BR') : 'N/A';
           const details = hist.details ? `: ${hist.details}` : "";
-          const actionText = `${hist.action}${details}`;
+          const actionText = `${hist.action || 'Evento'}${details}` || 'Evento';
           
           const splitAction = doc.splitTextToSize(actionText, 105);
-          const heightNeeded = (splitAction.length * 4) + 4;
+          const heightNeeded = (Math.max(1, splitAction.length) * 4) + 4;
           
           checkPageBreak(heightNeeded);
           
           doc.setFontSize(7.2);
           doc.text(`${timeText}`, 16, currentY + 4.5);
-          doc.text(`${hist.user}`, 50, currentY + 4.5);
-          doc.text(splitAction, 85, currentY + 4.5);
+          doc.text(`${String(hist.user || 'Sistema').substring(0, 22)}`, 50, currentY + 4.5);
+          if (splitAction.length > 0) {
+            doc.text(splitAction, 85, currentY + 4.5);
+          }
           
           currentY += heightNeeded;
           doc.setDrawColor(241, 245, 249);
@@ -6306,6 +6336,10 @@ export default function FiscalView({
       
       // 6. PHOTO EVIDENCE PAGES (Using highly-polished 2-column grid layout requested by user)
       if (photos && photos.length > 0) {
+        const resolvedPhotos = await Promise.all(
+          photos.map(p => getPhotoBase64(p.photoUrl).catch(() => null))
+        );
+
         doc.addPage();
         currentY = 15;
         
@@ -6355,7 +6389,7 @@ export default function FiscalView({
           doc.text(sublabelText, xPos + 3, yPos + 9);
           
           try {
-            const imgBase64 = await getPhotoBase64(photo.photoUrl);
+            const imgBase64 = resolvedPhotos[i];
             if (imgBase64) {
               doc.addImage(imgBase64, 'JPEG', xPos + 3, yPos + 11, colWidth - 6, colHeight - 11);
             } else {
@@ -6536,20 +6570,22 @@ export default function FiscalView({
     const prod = products.find(p => p.code === recSelectedProductCode);
     if (!prod) return;
 
-    const existingIndex = activeSession.items.findIndex(i => i.productCode === recSelectedProductCode);
-    let updatedItems = [...activeSession.items];
+    const existingItems = activeSession.items || [];
+    const existingIndex = existingItems.findIndex(i => i.productCode === recSelectedProductCode);
+    let updatedItems = [...existingItems];
 
     if (existingIndex > -1) {
       const currentItem = updatedItems[existingIndex];
       updatedItems[existingIndex] = {
         ...currentItem,
+        physicalQty: Number(currentItem.physicalQty ?? 0) || 0,
         fiscalQty: fiscalQty
       };
     } else {
       const newItem: AuditItem = {
         productCode: prod.code,
-        productDescription: prod.description,
-        cost: prod.cost,
+        productDescription: prod.description || 'Produto',
+        cost: Number(prod.cost) || 0,
         physicalQty: 0,
         rePhysicalQty: undefined,
         fiscalQty: fiscalQty
@@ -6557,11 +6593,20 @@ export default function FiscalView({
       updatedItems.push(newItem);
     }
 
-    const updatedSession = { ...activeSession, items: updatedItems };
+    const now = new Date().toISOString();
+    const updatedSession: AuditSession = {
+      ...activeSession,
+      items: updatedItems,
+      updatedAt: now,
+      lastUpdatedBy: currentUser.name
+    };
+    setLoadedSessionTime(now);
     setActiveSession(updatedSession);
 
     // Save update to database so other views stay in sync
-    const updatedAudits = audits.map(a => a.id === activeSession.id ? updatedSession : a);
+    const updatedAudits = audits.some(a => a.id === activeSession.id)
+      ? audits.map(a => a.id === activeSession.id ? updatedSession : a)
+      : [updatedSession, ...audits];
     onSaveAudits(updatedAudits);
 
     // Reset form states
@@ -6753,8 +6798,17 @@ export default function FiscalView({
   const handleFinalizeReconciliation = () => {
     if (!activeSession || isFinalizing) return;
 
-    // Check if monitoramento reported a discrepancy
-    const matchedRoute = importedRoutes.find(r => r.routeMap.toUpperCase() === activeSession.routeMap.toUpperCase());
+    const sessionMapNorm = normalizeMapCode(activeSession.routeMap).toUpperCase();
+    const sessionMemberMaps = (activeSession.unifiedMaps && activeSession.unifiedMaps.length > 0)
+      ? activeSession.unifiedMaps.map(m => normalizeMapCode(m).toUpperCase())
+      : activeSession.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase());
+
+    // Check if monitoramento reported a discrepancy (normalized & unified map match)
+    const matchedRouteWithObs = importedRoutes.find(r => {
+      if (!r.discrepancyObservation) return false;
+      const rNorm = normalizeMapCode(r.routeMap).toUpperCase();
+      return rNorm === sessionMapNorm || sessionMemberMaps.includes(rNorm) || r.routeMap.toUpperCase() === activeSession.routeMap.toUpperCase();
+    });
 
     const executeFinalization = async () => {
       setIsFinalizing(true);
@@ -6763,28 +6817,28 @@ export default function FiscalView({
         let hasDiscrepancy = false;
         
         // Verify products
-        const itemsWithUpdatedFiscal = activeSession.items.map(item => {
-          const physical = item.rePhysicalQty !== undefined ? item.rePhysicalQty : item.physicalQty;
-          const fiscal = item.fiscalQty ?? 0;
-          const comodato = item.comodatoQty ?? 0;
-          const recolha = item.recolhaQty ?? 0;
+        const itemsWithUpdatedFiscal = (activeSession.items || []).map(item => {
+          const physical = Number(item.rePhysicalQty !== undefined ? item.rePhysicalQty : (item.physicalQty ?? 0)) || 0;
+          const fiscal = Number(item.fiscalQty ?? 0) || 0;
+          const comodato = Number(item.comodatoQty ?? 0) || 0;
+          const recolha = Number(item.recolhaQty ?? 0) || 0;
           const diff = physical - fiscal + comodato - recolha;
           if (diff !== 0) hasDiscrepancy = true;
-          return { ...item, fiscalQty: fiscal, comodatoQty: comodato, recolhaQty: recolha }; // Ensure it has fiscal quantity defined
+          return { ...item, physicalQty: Number(item.physicalQty ?? 0) || 0, fiscalQty: fiscal, comodatoQty: comodato, recolhaQty: recolha };
         });
 
         // Verify assets
-        const assetsWithUpdatedFiscal = activeSession.assets.map(asset => {
-          const physical = asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : asset.physicalQty;
-          const fiscal = asset.fiscalQty ?? 0;
-          const comodato = asset.comodatoQty ?? 0;
-          const recolha = asset.recolhaQty ?? 0;
+        const assetsWithUpdatedFiscal = (activeSession.assets || []).map(asset => {
+          const physical = Number(asset.rePhysicalQty !== undefined ? asset.rePhysicalQty : (asset.physicalQty ?? 0)) || 0;
+          const fiscal = Number(asset.fiscalQty ?? 0) || 0;
+          const comodato = Number(asset.comodatoQty ?? 0) || 0;
+          const recolha = Number(asset.recolhaQty ?? 0) || 0;
           const diff = physical - fiscal + comodato - recolha;
           
           // Only exempt assets (Chapatex and Pallet) are excluded from discrepancy status
           const isExempt = isExemptAsset(asset.assetId, asset.assetName);
           if (diff !== 0 && !isExempt) hasDiscrepancy = true;
-          return { ...asset, fiscalQty: fiscal, comodatoQty: comodato, recolhaQty: recolha }; // Ensure properties are preserved
+          return { ...asset, physicalQty: Number(asset.physicalQty ?? 0) || 0, fiscalQty: fiscal, comodatoQty: comodato, recolhaQty: recolha };
         });
 
         const finalStatus: 'finalizado_ok' | 'finalizado_divergente' = hasDiscrepancy ? 'finalizado_divergente' : 'finalizado_ok';
@@ -6804,10 +6858,13 @@ export default function FiscalView({
           reopened: false,
           reopeningRequested: false,
           reopeningJustification: undefined,
+          surplusFlowStatus: activeSession.reopened ? undefined : activeSession.surplusFlowStatus,
+          surplusActionStatus: activeSession.reopened ? undefined : activeSession.surplusActionStatus,
+          deficitActionStatus: activeSession.reopened ? undefined : activeSession.deficitActionStatus,
           updatedAt: now,
           lastUpdatedBy: currentUser.name,
           history: [
-            ...activeSession.history,
+            ...(activeSession.history || []),
             {
               timestamp: now,
               action: finalStatus === 'finalizado_ok' ? 'Baixa Concluída - OK' : 'Baixa Concluída com Divergências',
@@ -6817,15 +6874,15 @@ export default function FiscalView({
           ]
         };
 
-        // 1. GERAR O PDF E EXTRAIR BASE64 EM SEGUNDO PLANO (EM MEMÓRIA)
+        // 1. GERAR O PDF EM SEGUNDO PLANO (EM MEMÓRIA)
         const pdfRes = await downloadSingleAuditPDF(updatedSession, true);
-        if (!pdfRes || !pdfRes.success || !pdfRes.base64) {
+        if (!pdfRes || !pdfRes.success || !pdfRes.doc) {
           alert("Erro ao gerar o relatório PDF em memória. A baixa foi cancelada.");
           setIsFinalizing(false);
           return;
         }
 
-        const { base64, filename, doc } = pdfRes;
+        const { filename, doc } = pdfRes;
 
         // Prepare payload data
         const activeDate = activeSession.routeDate || activeSession.arrivalDate || activeSession.endTime?.split('T')[0] || activeSession.startTime?.split('T')[0];
@@ -6835,8 +6892,12 @@ export default function FiscalView({
           : activeSession.routeMap.split('+').map(m => normalizeMapCode(m).toUpperCase());
 
         const closedDuplicateAudits: AuditSession[] = [];
+        let foundActiveInAudits = false;
         const updatedAudits = audits.map(a => {
-          if (a.id === activeSession.id) return updatedSession;
+          if (a.id === activeSession.id) {
+            foundActiveInAudits = true;
+            return updatedSession;
+          }
           const normA = normalizeMapCode(a.routeMap).toUpperCase();
           const sameMap = normA === normActive || a.routeMap.trim().toUpperCase() === activeSession.routeMap.trim().toUpperCase() ||
             targetMemberMaps.includes(normA) ||
@@ -6861,6 +6922,9 @@ export default function FiscalView({
           }
           return a;
         });
+        if (!foundActiveInAudits) {
+          updatedAudits.unshift(updatedSession);
+        }
         
         const matchedUpdatedRoutes: ImportedRoute[] = [];
         let updatedRoutes = importedRoutes;
@@ -6897,6 +6961,11 @@ export default function FiscalView({
           updatedAlerts = [newAlert, ...fiscalAlerts];
         }
 
+        // Atualiza imediatamente os estados locais e trava as chaves de escrita antes das requisições remotas
+        onSaveAudits(updatedAudits);
+        if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
+        if (onSaveAlerts) onSaveAlerts(updatedAlerts);
+
         // 2. DISPARAR A SAGA DE BAIXA NO FIRESTORE (ATÔMICO) E NO BACKEND
         let result: any = { success: false, durableBackup: { cloudStorage: false, firestore: false } };
         if (isClientFirebaseActive()) {
@@ -6919,17 +6988,19 @@ export default function FiscalView({
           }
         }
 
+        const controller = new AbortController();
+        const apiTimeout = setTimeout(() => controller.abort(), result.durableBackup.firestore ? 2500 : 4000);
         try {
           const response = await fetch('/api/concluir-baixa', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
             body: JSON.stringify({
               auditId: activeSession.id,
-              pdfBase64: base64,
               filename: filename,
               updatedAuditSession: updatedSession,
-              updatedImportedRoutes: updatedRoutes,
-              updatedAlerts: updatedAlerts,
+              updatedImportedRoutes: result.durableBackup.firestore ? undefined : updatedRoutes,
+              updatedAlerts: result.durableBackup.firestore ? undefined : updatedAlerts,
               user: currentUser ? { id: currentUser.id, name: currentUser.name, role: currentUser.role } : null
             })
           });
@@ -6947,25 +7018,22 @@ export default function FiscalView({
           }
         } catch (srvErr) {
           console.warn("[Baixa Saga] Aviso ao gravar baixa no servidor de retaguarda:", srvErr);
+        } finally {
+          clearTimeout(apiTimeout);
         }
 
         console.log("[Baixa Saga] Sucesso na execução da saga de baixa:", result);
 
-        // 3. CICLO DE VIDA DAS FOTOS: Excluídas no momento do fechamento/exportação para otimização e prevenção de corrupção
+        // 3. CICLO DE VIDA DAS FOTOS: Excluídas sem travar o fechamento caso alguma rede esteja lenta
         console.log("[Baixa Saga] Excluindo fotos de evidência locais e do servidor para este mapa...");
-        try {
-          await ImageDB.clearPhotosByAudit(activeSession.id);
-          console.log("[Baixa Saga] Fotos excluídas com sucesso.");
-        } catch (photoClearErr) {
+        Promise.race([
+          ImageDB.clearPhotosByAudit(activeSession.id),
+          new Promise<void>((resolve) => setTimeout(resolve, 1500))
+        ]).catch((photoClearErr) => {
           console.error("Erro ao excluir fotos de evidência:", photoClearErr);
-        }
+        });
 
-        // 4. ATUALIZAR OS ESTADOS DE MEMÓRIA DA PLATAFORMA PARA SINC NO CLIENT
-        onSaveAudits(updatedAudits);
-        if (onSaveImportedRoutes) onSaveImportedRoutes(updatedRoutes);
-        if (onSaveAlerts) onSaveAlerts(updatedAlerts);
-
-        // 5. EFETUAR DOWNLOAD DE CONVENIÊNCIA NO NAVEGADOR DO USUÁRIO
+        // 4. EFETUAR DOWNLOAD DE CONVENIÊNCIA NO NAVEGADOR DO USUÁRIO
         try {
           doc.save(filename);
         } catch (downErr) {
@@ -6982,22 +7050,26 @@ export default function FiscalView({
             ? 'Retorno baixado com sucesso! Mapa fechado em definitivo e relatório PDF salvo.' 
             : 'Retorno baixado com divergências registradas. Mapa fechado em definitivo e relatório PDF salvo.';
         }
-        alert(alertMessage);
+
         setActiveSession(null);
+        setLoadedSessionTime(undefined);
         setReconciliationNotes('');
+        setIsFinalizing(false);
+        alert(alertMessage);
 
       } catch (sagaErr: any) {
         console.error("[Baixa Saga] Falha crítica na execução:", sagaErr);
+        setIsFinalizing(false);
         alert(`FALHA CRÍTICA NA BAIXA:\n\n${sagaErr.message || sagaErr}\n\nA operação foi cancelada e o mapa continua pendente de fechamento.`);
       } finally {
         setIsFinalizing(false);
       }
     };
 
-    if (matchedRoute && matchedRoute.discrepancyObservation) {
+    if (matchedRouteWithObs && matchedRouteWithObs.discrepancyObservation) {
       requestConfirm(
         "⚠️ Divergência do Monitoramento",
-        `ATENÇÃO: O Monitoramento reportou a seguinte divergência de ativos de giro ou P.A para esta rota:\n\n"${matchedRoute.discrepancyObservation}"\n\nDeseja fechar o mapa mesmo assim? Certifique-se de que a divergência foi tratada.`,
+        `ATENÇÃO: O Monitoramento reportou a seguinte divergência de ativos de giro ou P.A para esta rota:\n\n"${matchedRouteWithObs.discrepancyObservation}"\n\nDeseja fechar o mapa mesmo assim? Certifique-se de que a divergência foi tratada.`,
         executeFinalization
       );
     } else {
@@ -9097,7 +9169,7 @@ export default function FiscalView({
 
                 const standaloneActiveAudits = audits.filter(a => {
                   if (a.status !== 'em_aberto' && a.status !== 'reconferencia') return false;
-                  if (a.pdfDownloaded || a.surplusFlowStatus === 'BAIXADO') return false;
+                  if (!a.reopened && (a.pdfDownloaded || a.surplusFlowStatus === 'BAIXADO')) return false;
                   const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
                   const isDirectlyInWorking = workingRoutes.some(r => normalizeMapCode(r.routeMap).toUpperCase() === aNorm);
                   return !isDirectlyInWorking;
@@ -10558,7 +10630,12 @@ export default function FiscalView({
                                   {group.matchingAudit && (
                                     <button
                                       type="button"
-                                      onClick={() => setActiveSession(group.matchingAudit!)}
+                                      onClick={() => {
+                                        const target = group.matchingAudit!;
+                                        setReconciliationNotes(target.reconciliationNotes || '');
+                                        setLoadedSessionTime(target.updatedAt);
+                                        setActiveSession(target);
+                                      }}
                                       className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-white font-bold text-[10px] uppercase rounded-lg transition shadow-xs cursor-pointer ml-1"
                                     >
                                       Abrir Mapa
@@ -15004,7 +15081,10 @@ export default function FiscalView({
             <div className="flex items-center justify-end space-x-3 pt-2">
               <button
                 type="button"
-                onClick={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
+                onClick={() => {
+                  confirmCallbackRef.current = null;
+                  setConfirmModal(prev => ({ ...prev, isOpen: false }));
+                }}
                 className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xxs font-bold rounded-lg transition"
               >
                 Cancelar
@@ -15012,10 +15092,10 @@ export default function FiscalView({
               <button
                 type="button"
                 onClick={() => {
-                  if (confirmCallbackRef.current) {
-                    confirmCallbackRef.current();
-                  }
-                  setConfirmModal(prev => ({ ...prev, isOpen: false }));
+                  const cb = confirmCallbackRef.current;
+                  confirmCallbackRef.current = null;
+                  setConfirmModal({ isOpen: false, title: '', message: '' });
+                  if (cb) cb();
                 }}
                 className="px-4 py-2 bg-[#0f35a9] hover:bg-[#0c2a86] text-white text-xxs font-bold rounded-lg transition shadow-3xs"
               >
@@ -16342,54 +16422,6 @@ export default function FiscalView({
                   </div>
                 );
               })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Confirmation Modal */}
-      {confirmModal.isOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-200">
-            <div className="p-5 bg-slate-900 text-white flex items-center justify-between">
-              <div className="flex items-center space-x-3">
-                <div className="p-2 bg-amber-500/20 text-amber-400 rounded-lg">
-                  <AlertTriangle className="h-5 w-5" />
-                </div>
-                <h3 className="text-base font-bold tracking-tight">{confirmModal.title}</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setConfirmModal({ isOpen: false, title: '', message: '' })}
-                className="text-slate-400 hover:text-white transition p-1 rounded-lg hover:bg-slate-800 cursor-pointer"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="p-6">
-              <p className="text-sm text-slate-700 leading-relaxed font-medium">
-                {confirmModal.message}
-              </p>
-            </div>
-            <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end space-x-3">
-              <button
-                type="button"
-                onClick={() => setConfirmModal({ isOpen: false, title: '', message: '' })}
-                className="px-4 py-2 text-xs font-bold text-slate-600 hover:text-slate-800 hover:bg-slate-200/60 rounded-xl transition cursor-pointer font-sans"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const cb = confirmCallbackRef.current;
-                  setConfirmModal({ isOpen: false, title: '', message: '' });
-                  if (cb) cb();
-                }}
-                className="px-5 py-2 text-xs font-extrabold text-white bg-amber-500 hover:bg-amber-600 active:bg-amber-700 rounded-xl shadow-md transition cursor-pointer font-sans uppercase tracking-wider"
-              >
-                Confirmar
-              </button>
             </div>
           </div>
         </div>

@@ -553,14 +553,14 @@ export default function App() {
     // Auto-resolve any duplicate/stale pending sessions ONLY if a finalized audit exists for the EXACT same map and exact same date
     return cleanedList.map(a => {
       const isPendingStatus = a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada' || a.status === 'em_aberto' || a.status === 'reconferencia';
-      if (isPendingStatus && !a.reopeningRequested) {
+      if (isPendingStatus && !a.reopeningRequested && !a.reopened) {
         const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
         const normMap = normalizeMapCode(a.routeMap).toUpperCase();
         if (!normMap) return a;
 
         const hasFinishedDuplicate = cleanedList.some(other => {
           if (other.id === a.id) return false;
-          const isFinished = (other.status === 'finalizado_ok' || other.status === 'finalizado_divergente' || (other as any).pdfDownloaded === true || (other as any).surplusFlowStatus === 'BAIXADO') && !other.reopeningRequested;
+          const isFinished = (other.status === 'finalizado_ok' || other.status === 'finalizado_divergente' || (other as any).pdfDownloaded === true || (other as any).surplusFlowStatus === 'BAIXADO') && !other.reopeningRequested && !other.reopened;
           if (!isFinished) return false;
 
           const normOther = normalizeMapCode(other.routeMap).toUpperCase();
@@ -1353,7 +1353,10 @@ export default function App() {
     const prevAudits = auditsRef.current || audits;
     const updatedAudits = newAudits.map(newAudit => {
       const oldAudit = prevAudits.find(a => a.id === newAudit.id);
-      if (oldAudit && isAuditFinalized(oldAudit) && !isAuditFinalized(newAudit) && !canRegressFinalizedAudit(oldAudit, newAudit)) {
+      const isExplicitLocalReopen =
+        (newAudit.reopened === true && !oldAudit?.reopened && (newAudit.history?.length || 0) > (oldAudit?.history?.length || 0)) ||
+        (newAudit.reopeningRequested === true && !oldAudit?.reopeningRequested);
+      if (oldAudit && isAuditFinalized(oldAudit) && !isAuditFinalized(newAudit) && !canRegressFinalizedAudit(oldAudit, newAudit) && !isExplicitLocalReopen) {
         return oldAudit;
       }
       const oldFunctional = oldAudit ? { ...oldAudit, updatedAt: undefined, lastUpdatedBy: undefined } : null;
