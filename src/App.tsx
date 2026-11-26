@@ -227,8 +227,8 @@ export default function App() {
       }
       if (document.visibilityState === 'visible') {
         const hiddenDurationMs = lastHiddenAt > 0 ? Date.now() - lastHiddenAt : 0;
-        if (hiddenDurationMs >= 10000) {
-          console.log('[App] App voltou ao primeiro plano após pausa - verificando conexão em tempo real com Firestore...');
+        if (hiddenDurationMs >= 180000) {
+          console.log('[App] App voltou ao primeiro plano após longa pausa - verificando conexão em tempo real com Firestore...');
           forceReconnect();
         }
         if (!isClientFirebaseActive()) {
@@ -451,14 +451,17 @@ export default function App() {
             console.warn('[ClientFirebase] Erro ao sincronizar diretamente com o Firestore:', err);
           }
 
-          let srvSuccess = false;
-          try {
-            srvSuccess = await saveToServer(payload);
-          } catch (err) {
-            // Expected fallback on static hosts like GitHub Pages
+          if (fsSuccess) {
+            success = true;
+          } else {
+            let srvSuccess = false;
+            try {
+              srvSuccess = await saveToServer(payload);
+            } catch (err) {
+              // Expected fallback on static hosts like GitHub Pages
+            }
+            success = srvSuccess;
           }
-
-          success = fsSuccess || srvSuccess;
         } else {
           success = await saveToServer(payload);
         }
@@ -550,27 +553,47 @@ export default function App() {
       routeMap: normalizeMapCode(a.routeMap),
     }));
 
+    // Pre-index finished map+date keys in O(N) so we avoid O(N^2) scanning on every audit change
+    const finishedMapDates = new Map<string, string[]>(); // normMap -> list of audit IDs + dates
+    const finishedEntriesByMap = new Map<string, Array<{ id: string; date: string }>>();
+    for (const other of cleanedList) {
+      const isFinished =
+        (other.status === 'finalizado_ok' ||
+         other.status === 'finalizado_divergente' ||
+         (other as any).pdfDownloaded === true ||
+         (other as any).surplusFlowStatus === 'BAIXADO') &&
+        !other.reopeningRequested &&
+        !other.reopened;
+      if (!isFinished) continue;
+      const otherDate = other.arrivalDate || other.routeDate || other.endTime?.split('T')[0] || other.startTime?.split('T')[0];
+      if (!otherDate) continue;
+      const maps = new Set<string>();
+      const normOther = normalizeMapCode(other.routeMap).toUpperCase();
+      if (normOther) maps.add(normOther);
+      if (other.unifiedMaps) {
+        for (const m of other.unifiedMaps) {
+          const nm = normalizeMapCode(m).toUpperCase();
+          if (nm) maps.add(nm);
+        }
+      }
+      maps.forEach(m => {
+        const arr = finishedEntriesByMap.get(m);
+        if (arr) arr.push({ id: other.id, date: otherDate });
+        else finishedEntriesByMap.set(m, [{ id: other.id, date: otherDate }]);
+      });
+    }
+    void finishedMapDates;
+
     // Auto-resolve any duplicate/stale pending sessions ONLY if a finalized audit exists for the EXACT same map and exact same date
     return cleanedList.map(a => {
       const isPendingStatus = a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada' || a.status === 'em_aberto' || a.status === 'reconferencia';
       if (isPendingStatus && !a.reopeningRequested && !a.reopened) {
         const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
         const normMap = normalizeMapCode(a.routeMap).toUpperCase();
-        if (!normMap) return a;
+        if (!normMap || !aDate) return a;
 
-        const hasFinishedDuplicate = cleanedList.some(other => {
-          if (other.id === a.id) return false;
-          const isFinished = (other.status === 'finalizado_ok' || other.status === 'finalizado_divergente' || (other as any).pdfDownloaded === true || (other as any).surplusFlowStatus === 'BAIXADO') && !other.reopeningRequested && !other.reopened;
-          if (!isFinished) return false;
-
-          const normOther = normalizeMapCode(other.routeMap).toUpperCase();
-          const otherDate = other.arrivalDate || other.routeDate || other.endTime?.split('T')[0] || other.startTime?.split('T')[0];
-          
-          if (!aDate || !otherDate || aDate !== otherDate) return false;
-
-          const sameMap = normOther === normMap || (other.unifiedMaps && other.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normMap));
-          return sameMap;
-        });
+        const candidates = finishedEntriesByMap.get(normMap);
+        const hasFinishedDuplicate = candidates ? candidates.some(c => c.id !== a.id && c.date === aDate) : false;
 
         if (hasFinishedDuplicate) {
           return {
@@ -670,38 +693,57 @@ export default function App() {
     if (!list) return [];
     const now = new Date().toISOString();
     const effectiveAudits = currentAudits || auditsRef.current || audits || [];
+
+    // Pre-index audits by normalized map code in O(N) instead of O(M * N) nested .some() loops
+    const activeAuditDatesByMap = new Map<string, string[]>();
+    const closedAuditDatesByMap = new Map<string, string[]>();
+
+    for (const a of effectiveAudits) {
+      if (!a) continue;
+      const isPendingOrOpen = a.reopeningRequested || a.reopened || a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada' || a.status === 'em_aberto' || a.status === 'reconferencia';
+      const isClosed = !isPendingOrOpen && isAuditFinalized(a);
+      if (!isPendingOrOpen && !isClosed) continue;
+
+      const aDate = a.routeDate || a.arrivalDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0] || '';
+      const mapCodes = new Set<string>();
+      const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
+      if (aNorm) mapCodes.add(aNorm);
+      if (a.unifiedMaps) {
+        for (const m of a.unifiedMaps) {
+          const nm = normalizeMapCode(m).toUpperCase();
+          if (nm) mapCodes.add(nm);
+        }
+      }
+
+      const targetIndex = isPendingOrOpen ? activeAuditDatesByMap : closedAuditDatesByMap;
+      mapCodes.forEach(code => {
+        const arr = targetIndex.get(code);
+        if (arr) arr.push(aDate);
+        else targetIndex.set(code, [aDate]);
+      });
+    }
+
     return list.filter(Boolean).map(r => {
       const normMap = normalizeMapCode(r.routeMap).toUpperCase();
-      const hasActiveAudit = effectiveAudits.some(a => {
-        if (!a) return false;
-        const isPendingOrOpen = a.reopeningRequested || a.reopened || a.status === 'conferido_fisico' || a.status === 'recontagem_finalizada' || a.status === 'em_aberto' || a.status === 'reconferencia';
-        if (!isPendingOrOpen) return false;
-        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
-        const matches = aNorm === normMap || (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normMap));
-        if (!matches) return false;
-        if (r.routeDate) {
-          const aDate = a.routeDate || a.arrivalDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
-          if (aDate && aDate !== r.routeDate) return false;
-        }
-        return true;
-      });
+      const activeDates = activeAuditDatesByMap.get(normMap);
+      const hasActiveAudit = activeDates
+        ? activeDates.some(aDate => !r.routeDate || !aDate || aDate === r.routeDate)
+        : false;
 
-      const isClosedByAudit = !hasActiveAudit && effectiveAudits.some(a => {
-        if (!isAuditFinalized(a)) return false;
-        const aNorm = normalizeMapCode(a.routeMap).toUpperCase();
-        const matches = aNorm === normMap || (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m).toUpperCase() === normMap));
-        if (!matches) return false;
-        if (r.routeDate) {
-          const aDate = a.routeDate || a.arrivalDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
-          if (aDate && aDate !== r.routeDate) return false;
-        }
-        return true;
-      });
+      const closedDates = !hasActiveAudit ? closedAuditDatesByMap.get(normMap) : undefined;
+      const isClosedByAudit = closedDates
+        ? closedDates.some(aDate => !r.routeDate || !aDate || aDate === r.routeDate)
+        : false;
+
+      const nextStatus = isClosedByAudit ? ('fechado' as const) : r.status;
+      if (r.routeMap === normalizeMapCode(r.routeMap) && r.status === nextStatus && r.importedAt && r.updatedAt) {
+        return r;
+      }
 
       return {
         ...r,
         routeMap: normalizeMapCode(r.routeMap),
-        status: isClosedByAudit ? ('fechado' as const) : r.status,
+        status: nextStatus,
         importedAt: r.importedAt || now,
         updatedAt: r.updatedAt || r.importedAt || now
       };
@@ -1037,11 +1079,24 @@ export default function App() {
     fetchLatestServerData();
   }, []);
 
+  const userRoleForSync = currentUser?.role || '';
+
   // 4a. Setup real-time database updates via Firestore Live Sync if active
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
     let pendingSnapshotTimeout: any = null;
     let pendingSnapshotDb: Record<string, any> = {};
+    let immediateBatchTimeout: any = null;
+    let immediateBatchDb: Record<string, any> = {};
+
+    const flushImmediateBatch = () => {
+      immediateBatchTimeout = null;
+      const payload = immediateBatchDb;
+      immediateBatchDb = {};
+      if (Object.keys(payload).length > 0) {
+        applyDirectDbRef.current(payload);
+      }
+    };
 
     const flushPendingSnapshots = () => {
       pendingSnapshotTimeout = null;
@@ -1073,10 +1128,14 @@ export default function App() {
       }
       if (isClientFirebaseActive()) {
         console.log("[ClientFirebase] Inicializando sincronização em tempo real nativa com Firestore (Plano Blaze)...");
+        // Field mobile roles (conferente/empilhador) don't use auditLogs or heavy desktop-only collections
+        const skipCollections = (userRoleForSync === 'conferente' || userRoleForSync === 'empilhador')
+          ? ['auditLogs', 'controleSobras']
+          : [];
         unsubscribe = subscribeToFirestore((db) => {
           if (!db || typeof db !== 'object') return;
           const now = Date.now();
-          const immediatePayload: Record<string, any> = {};
+          let hasImmediate = false;
           let hasDeferred = false;
 
           Object.keys(db).forEach((key) => {
@@ -1085,19 +1144,21 @@ export default function App() {
               pendingSnapshotDb[key] = db[key];
               hasDeferred = true;
             } else {
-              immediatePayload[key] = db[key];
+              immediateBatchDb[key] = db[key];
               delete pendingSnapshotDb[key];
+              hasImmediate = true;
             }
           });
 
-          if (Object.keys(immediatePayload).length > 0) {
-            applyDirectDbRef.current(immediatePayload);
+          // Coalesce burst snapshots (e.g. startup 18 collections) into a single React commit
+          if (hasImmediate && !immediateBatchTimeout) {
+            immediateBatchTimeout = setTimeout(flushImmediateBatch, 60);
           }
 
           if (hasDeferred && !pendingSnapshotTimeout) {
             pendingSnapshotTimeout = setTimeout(flushPendingSnapshots, 1300);
           }
-        });
+        }, { skipCollections });
       }
     };
 
@@ -1119,6 +1180,9 @@ export default function App() {
     window.addEventListener('force_database_apply', handleForceApply);
 
     return () => {
+      if (immediateBatchTimeout) {
+        clearTimeout(immediateBatchTimeout);
+      }
       if (pendingSnapshotTimeout) {
         clearTimeout(pendingSnapshotTimeout);
       }
@@ -1129,18 +1193,23 @@ export default function App() {
         unsubscribe();
       }
     };
-  }, [clientPermissionDenied]);
+  }, [clientPermissionDenied, userRoleForSync]);
 
   // 4b. Setup global server events (DB switch countdowns, config changes, schedule rules) via SSE
   useEffect(() => {
     let eventSource: EventSource | null = null;
     let reconnectTimeout: any = null;
+    let sseFailures = 0;
 
     const connectSSE = () => {
-      console.log("Conectando ao canal de sincronização de eventos do servidor (SSE)...");
       eventSource = new EventSource('/api/db/events');
 
+      eventSource.onopen = () => {
+        sseFailures = 0;
+      };
+
       eventSource.onmessage = (event) => {
+        sseFailures = 0;
         try {
           const data = JSON.parse(event.data);
           
@@ -1171,14 +1240,12 @@ export default function App() {
             if (data.db) {
               const db = data.db;
               
-              if (db.photos) {
+              if (db.photos && !isClientFirebaseActive()) {
                 ImageDB.syncPhotos(db.photos).catch(e => console.error("Error syncing photos from SSE:", e));
               }
 
               // When Client Firebase is active, all primary collections are synchronized
               // directly and authoritatively via Firestore onSnapshot listeners.
-              // We MUST NOT apply stale server db collections here, which would create
-              // oscillating conflicts between server file cache and Cloud Firestore.
               if (isClientFirebaseActive()) {
                 return;
               }
@@ -1196,14 +1263,15 @@ export default function App() {
         }
       };
 
-      eventSource.onerror = (err) => {
-        console.log("Canal de sincronização SSE em modo de espera ou reconectando. Tentando reconexão automática em 3s...");
+      eventSource.onerror = () => {
+        sseFailures++;
         if (eventSource) {
           eventSource.close();
         }
+        const delayMs = Math.min(60000, 3000 * Math.pow(2, Math.min(sseFailures, 5)));
         reconnectTimeout = setTimeout(() => {
           connectSSE();
-        }, 3000);
+        }, delayMs);
       };
     };
 
@@ -1351,8 +1419,15 @@ export default function App() {
   const handleSaveAudits = (newAudits: AuditSession[]) => {
     const timestamp = new Date().toISOString();
     const prevAudits = auditsRef.current || audits;
+    const prevMap = new Map<string, AuditSession>();
+    prevAudits.forEach(a => { if (a?.id) prevMap.set(a.id, a); });
+
     const updatedAudits = newAudits.map(newAudit => {
-      const oldAudit = prevAudits.find(a => a.id === newAudit.id);
+      const oldAudit = prevMap.get(newAudit.id);
+      // Fast-path O(1): untouched objects keep the exact same reference
+      if (oldAudit && oldAudit === newAudit) {
+        return newAudit;
+      }
       const isExplicitLocalReopen =
         (newAudit.reopened === true && !oldAudit?.reopened && (newAudit.history?.length || 0) > (oldAudit?.history?.length || 0)) ||
         (newAudit.reopeningRequested === true && !oldAudit?.reopeningRequested);
@@ -1396,13 +1471,20 @@ export default function App() {
   const handleSaveImportedRoutes = (newRoutes: ImportedRoute[]) => {
     const timestamp = new Date().toISOString();
     const prevRoutes = importedRoutesRef.current || importedRoutes;
+    const prevMap = new Map<string, ImportedRoute>();
+    prevRoutes.forEach(r => {
+      if (!r) return;
+      const k = `${normalizeMapCode(r.routeMap).toUpperCase()}_${r.routeDate || ''}`;
+      prevMap.set(k, r);
+    });
+
     const updatedRoutes = newRoutes.map(newRoute => {
-      const newMapKey = normalizeMapCode(newRoute.routeMap).toUpperCase();
-      const newDate = newRoute.routeDate || '';
-      const oldRoute = prevRoutes.find(r => 
-        normalizeMapCode(r.routeMap).toUpperCase() === newMapKey &&
-        (r.routeDate || '') === newDate
-      );
+      const k = `${normalizeMapCode(newRoute.routeMap).toUpperCase()}_${newRoute.routeDate || ''}`;
+      const oldRoute = prevMap.get(k);
+      // Fast-path O(1): untouched route reference
+      if (oldRoute && oldRoute === newRoute) {
+        return newRoute;
+      }
       const oldFunctional = oldRoute ? { ...oldRoute, updatedAt: undefined } : null;
       const newFunctional = { ...newRoute, updatedAt: undefined };
       if (!oldFunctional || JSON.stringify(oldFunctional) !== JSON.stringify(newFunctional)) {
@@ -1569,24 +1651,27 @@ export default function App() {
     return d.toISOString().split('T')[0];
   })();
 
-  // Filter audits for deadlines
-  const pendingDeadlines = (audits || []).filter(audit => {
-    if (!audit) return false;
-    if (audit.surplusFlowStatus === 'ENVIADO') return false;
-    if (!audit.deliveryDate || audit.deliveryDate !== tomorrowStr) return false;
-    
-    const hasSurplus = (audit.items || []).some(i => {
-      const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
-      return phys > (i.fiscalQty ?? 0);
-    }) || (audit.assets || []).some(a => {
-      const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
-      return phys > (a.fiscalQty ?? 0);
-    });
-    
-    return hasSurplus;
-  });
+  // Filter audits for deadlines only for roles that see the popup
+  const shouldCheckDeadlines = currentUser && (currentUser.role === 'gestor' || currentUser.role === 'auxiliar_logistica') && !hasShownDeadlinePopup;
+  const pendingDeadlines = shouldCheckDeadlines
+    ? (audits || []).filter(audit => {
+        if (!audit) return false;
+        if (audit.surplusFlowStatus === 'ENVIADO') return false;
+        if (!audit.deliveryDate || audit.deliveryDate !== tomorrowStr) return false;
+        
+        const hasSurplus = (audit.items || []).some(i => {
+          const phys = i.rePhysicalQty !== undefined ? i.rePhysicalQty : i.physicalQty;
+          return phys > (i.fiscalQty ?? 0);
+        }) || (audit.assets || []).some(a => {
+          const phys = a.rePhysicalQty !== undefined ? a.rePhysicalQty : a.physicalQty;
+          return phys > (a.fiscalQty ?? 0);
+        });
+        
+        return hasSurplus;
+      })
+    : [];
 
-  const showDeadlineModal = currentUser && (currentUser.role === 'gestor' || currentUser.role === 'auxiliar_logistica') && pendingDeadlines.length > 0 && !hasShownDeadlinePopup;
+  const showDeadlineModal = shouldCheckDeadlines && pendingDeadlines.length > 0;
 
   // Sent audits to notify monitoramento
   const sentAuditsToNotify = currentUser && currentUser.role === 'monitoramento'

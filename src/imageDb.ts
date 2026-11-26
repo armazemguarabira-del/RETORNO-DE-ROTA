@@ -102,6 +102,11 @@ export class ImageDB {
       }
     }
 
+    // Notify UI immediately so the captured photo appears instantly on slow mobile networks
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('logiroute_photos_updated'));
+    }
+
     // Attempt instant replication to the server with confirmation
     try {
       let isSynced = false;
@@ -125,23 +130,32 @@ export class ImageDB {
         }
       }
 
-      // ALWAYS replicate to the backend server API to ensure photos are cached on disk,
-      // registered in the server database cache, and available for PDF generation & non-client-firebase users.
-      try {
-        const res = await fetch('/api/photos', {
+      // Mirror to backend server disk/cache: non-blocking when Firestore already persisted,
+      // blocking only as fallback when Firestore wasn't used or failed.
+      const mirrorToServer = () =>
+        fetch('/api/photos', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ photo: newRecord })
         });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.success && data.photo) {
-            syncedPhotoData = data.photo;
-            isSynced = true;
+
+      if (isSynced) {
+        mirrorToServer().catch((srvErr) => {
+          console.warn('[ImageDB] Falha na réplica em segundo plano para a API de fotos do servidor:', srvErr);
+        });
+      } else {
+        try {
+          const res = await mirrorToServer();
+          if (res.ok) {
+            const data = await res.json();
+            if (data.success && data.photo) {
+              syncedPhotoData = data.photo;
+              isSynced = true;
+            }
           }
+        } catch (srvErr) {
+          console.warn('[ImageDB] Falha na réplica para a API de fotos do servidor:', srvErr);
         }
-      } catch (srvErr) {
-        console.warn('[ImageDB] Falha na réplica para a API de fotos do servidor:', srvErr);
       }
 
       if (isSynced) {
@@ -166,7 +180,9 @@ export class ImageDB {
           }
         }
         
-        window.dispatchEvent(new CustomEvent('logiroute_photos_updated'));
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('logiroute_photos_updated'));
+        }
         return syncedRecord;
       }
     } catch (e) {

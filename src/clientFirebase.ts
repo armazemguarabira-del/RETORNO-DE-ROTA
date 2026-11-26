@@ -82,14 +82,23 @@ export function canonicalJson(obj: any): string {
     return JSON.stringify(obj);
   }
   if (Array.isArray(obj)) {
-    return "[" + obj.map(canonicalJson).join(",") + "]";
+    let res = "[";
+    for (let i = 0; i < obj.length; i++) {
+      if (i > 0) res += ",";
+      res += obj[i] === undefined ? "null" : canonicalJson(obj[i]);
+    }
+    return res + "]";
   }
   const keys = Object.keys(obj).sort();
   let res = "{";
+  let first = true;
   for (let i = 0; i < keys.length; i++) {
     const k = keys[i];
-    if (i > 0) res += ",";
-    res += JSON.stringify(k) + ":" + canonicalJson(obj[k]);
+    const val = obj[k];
+    if (val === undefined) continue;
+    if (!first) res += ",";
+    first = false;
+    res += JSON.stringify(k) + ":" + canonicalJson(val);
   }
   res += "}";
   return res;
@@ -694,23 +703,25 @@ export async function saveDocsToFirestore(colName: string, items: any[], syncDel
   if (!db || !items) return false;
   try {
     const targetCol = COLLECTION_MAP[colName] || colName;
-    const cleanItems = JSON.parse(JSON.stringify(items));
     const colCache = getColCache(targetCol);
 
     const currentDocIds = new Set<string>();
     const opsToSet: Array<{ id: string; data: any; json: string }> = [];
 
-    // Filter only NEW or MODIFIED items using deterministic canonical JSON
-    for (const item of cleanItems) {
-      const docId = getDocIdForCollection(targetCol, item);
-      item.id = docId;
+    // Filter only NEW or MODIFIED items using deterministic canonical JSON without cloning untouched docs
+    for (const rawItem of items) {
+      if (!rawItem) continue;
+      const docId = getDocIdForCollection(targetCol, rawItem);
       currentDocIds.add(docId);
 
-      const newJson = canonicalJson(item);
+      const candidate = rawItem.id === docId ? rawItem : { ...rawItem, id: docId };
+      const newJson = canonicalJson(candidate);
       const cachedJson = colCache.get(docId);
 
       if (forceWrite || cachedJson !== newJson) {
-        opsToSet.push({ id: docId, data: item, json: newJson });
+        const cleanItem = JSON.parse(JSON.stringify(candidate));
+        cleanItem.id = docId;
+        opsToSet.push({ id: docId, data: cleanItem, json: newJson });
       }
     }
 
@@ -964,21 +975,28 @@ function stopConnectionWatchdog() {
  * ser chamada manualmente quando o app volta ao primeiro plano
  * (ver o handler de visibilitychange em App.tsx).
  */
+let activeSubscribeOptions: { skipCollections?: string[] } | undefined = undefined;
+
 export function forceReconnect(): void {
   if (!activeOnUpdateCallback) return;
-  subscribeToFirestore(activeOnUpdateCallback);
+  subscribeToFirestore(activeOnUpdateCallback, activeSubscribeOptions);
 }
 
 /**
  * Requirement 3: Real-time queries straight from Firestore collections.
  * Seed default initial values directly to Firestore if collections are empty.
  */
-export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
+export function subscribeToFirestore(
+  onUpdate: (db: any) => void,
+  options?: { skipCollections?: string[] }
+): () => void {
   const db = getClientFirestore();
   if (!db) return () => {};
 
   const myGeneration = ++reconnectGeneration;
   activeOnUpdateCallback = onUpdate;
+  activeSubscribeOptions = options;
+  const skipSet = new Set(options?.skipCollections || []);
 
   // Encerra qualquer inscrição/tentativa agendada da geração anterior antes de recomeçar
   Object.values(activeUnsubscribes).forEach((unsub) => { try { unsub(); } catch (e) {} });
@@ -1008,6 +1026,24 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
     safetyReports: [],
     blitzEntries: [],
     zeroBreakDeclarations: []
+  };
+
+  // Per-collection materialized item maps so incremental snapshots only parse changed docs
+  const colItemsMaps: Record<string, Map<string, any>> = {};
+  const initializedCollections = new Set<string>();
+
+  const normalizeCollectionDoc = (colName: string, docId: string, data: any) => {
+    const itemWithId = { ...data, id: docId };
+    if (colName === "audits") {
+      return {
+        ...itemWithId,
+        items: Array.isArray(data.items) ? data.items : [],
+        assets: Array.isArray(data.assets) ? data.assets : [],
+        history: Array.isArray(data.history) ? data.history : [],
+        unifiedMaps: Array.isArray(data.unifiedMaps) ? data.unifiedMaps : [],
+      };
+    }
+    return itemWithId;
   };
 
   const attach = (colName: string) => {
@@ -1083,32 +1119,49 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
 
           const targetCol = COLLECTION_MAP[colName] || colName;
           const colCache = getColCache(targetCol);
+          if (!colItemsMaps[colName]) {
+            colItemsMaps[colName] = new Map<string, any>();
+          }
+          const itemsMap = colItemsMaps[colName];
 
-          const currentServerIds = new Set<string>();
-          const items = snapshot.docs.map((d) => {
-            const data = d.data();
-            const docId = d.id;
-            currentServerIds.add(docId);
-            const itemWithId = { ...data, id: docId };
-            colCache.set(docId, canonicalJson(itemWithId));
-            if (colName === "audits") {
-              return {
-                ...itemWithId,
-                items: Array.isArray(data.items) ? data.items : [],
-                assets: Array.isArray(data.assets) ? data.assets : [],
-                history: Array.isArray(data.history) ? data.history : [],
-                unifiedMaps: Array.isArray(data.unifiedMaps) ? data.unifiedMaps : [],
-              };
+          const changes = snapshot.docChanges();
+          const isInitial = !initializedCollections.has(colName);
+
+          if (isInitial || changes.length >= snapshot.docs.length) {
+            initializedCollections.add(colName);
+            itemsMap.clear();
+            const currentServerIds = new Set<string>();
+            snapshot.docs.forEach((d) => {
+              const data = d.data();
+              const docId = d.id;
+              currentServerIds.add(docId);
+              const rawWithId = { ...data, id: docId };
+              colCache.set(docId, canonicalJson(rawWithId));
+              itemsMap.set(docId, normalizeCollectionDoc(colName, docId, data));
+            });
+            for (const cachedId of Array.from(colCache.keys())) {
+              if (!currentServerIds.has(cachedId)) {
+                colCache.delete(cachedId);
+              }
             }
-            return itemWithId;
-          });
-
-          // Clean up cache for deleted docs
-          for (const cachedId of Array.from(colCache.keys())) {
-            if (!currentServerIds.has(cachedId)) {
-              colCache.delete(cachedId);
+          } else {
+            // Incremental update: only parse & canonicalize documents that actually changed
+            if (changes.length === 0) return;
+            for (const change of changes) {
+              const docId = change.doc.id;
+              if (change.type === "removed") {
+                itemsMap.delete(docId);
+                colCache.delete(docId);
+              } else {
+                const data = change.doc.data();
+                const rawWithId = { ...data, id: docId };
+                colCache.set(docId, canonicalJson(rawWithId));
+                itemsMap.set(docId, normalizeCollectionDoc(colName, docId, data));
+              }
             }
           }
+
+          const items = Array.from(itemsMap.values());
 
           if (colName === "auditLogs") {
             combinedDb.auditLogs = items;
@@ -1127,6 +1180,7 @@ export function subscribeToFirestore(onUpdate: (db: any) => void): () => void {
   };
 
   TRACKED_COLLECTIONS.forEach((colName) => {
+    if (skipSet.has(colName)) return;
     resetCollectionRetryState(colName);
     attach(colName);
   });

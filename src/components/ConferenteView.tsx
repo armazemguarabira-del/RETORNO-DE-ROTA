@@ -31,6 +31,69 @@ const DEFAULT_EMP_LIST = [
   { id: 'EMP-G1013', name: 'PAULO PEREIRA DA SILVA' }
 ];
 
+const formatTimeSeconds = (secs: number) => {
+  const m = Math.floor(secs / 60).toString().padStart(2, '0');
+  const s = (secs % 60).toString().padStart(2, '0');
+  return `${m}:${s}`;
+};
+
+const SessionStopwatch = React.memo(({
+  isSuspended,
+  totalCountingDurationMs,
+  lastTimerStart
+}: {
+  isSuspended?: boolean;
+  totalCountingDurationMs?: number;
+  lastTimerStart?: string;
+}) => {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  useEffect(() => {
+    const compute = () => {
+      if (isSuspended) {
+        return Math.floor((totalCountingDurationMs || 0) / 1000);
+      }
+      const baseMs = totalCountingDurationMs || 0;
+      const currentIntervalMs = lastTimerStart
+        ? Math.max(0, Date.now() - new Date(lastTimerStart).getTime())
+        : 0;
+      return Math.floor((baseMs + currentIntervalMs) / 1000);
+    };
+
+    setElapsedSeconds(compute());
+    if (isSuspended) return;
+
+    const interval = setInterval(() => {
+      setElapsedSeconds(compute());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isSuspended, totalCountingDurationMs, lastTimerStart]);
+
+  return <>{formatTimeSeconds(elapsedSeconds)}</>;
+});
+
+function useIsMobileViewport(): boolean {
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return false;
+    return window.matchMedia('(max-width: 639px)').matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(max-width: 639px)');
+    const onChange = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    setIsMobile(mq.matches);
+    if (mq.addEventListener) {
+      mq.addEventListener('change', onChange);
+      return () => mq.removeEventListener('change', onChange);
+    }
+    mq.addListener(onChange);
+    return () => mq.removeListener(onChange);
+  }, []);
+
+  return isMobile;
+}
+
 interface ConferenteViewProps {
   currentUser: User;
   drivers: Driver[];
@@ -82,6 +145,66 @@ export default function ConferenteView({
   // Navigation / active sub-view
   const [activeSession, setActiveSession] = useState<AuditSession | null>(null);
   const [isFinishingAudit, setIsFinishingAudit] = useState(false);
+  const isMobileViewport = useIsMobileViewport();
+
+  const auditsRef = useRef<AuditSession[]>(audits);
+  const onSaveAuditsRef = useRef(onSaveAudits);
+  auditsRef.current = audits;
+  onSaveAuditsRef.current = onSaveAudits;
+
+  const debouncedAuditSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingAuditSessionRef = useRef<AuditSession | null>(null);
+
+  const clearPendingDebouncedSave = () => {
+    if (debouncedAuditSaveTimerRef.current) {
+      clearTimeout(debouncedAuditSaveTimerRef.current);
+      debouncedAuditSaveTimerRef.current = null;
+    }
+    pendingAuditSessionRef.current = null;
+  };
+
+  const flushPendingAuditSave = () => {
+    if (debouncedAuditSaveTimerRef.current) {
+      clearTimeout(debouncedAuditSaveTimerRef.current);
+      debouncedAuditSaveTimerRef.current = null;
+    }
+    const pending = pendingAuditSessionRef.current;
+    if (pending) {
+      pendingAuditSessionRef.current = null;
+      const baseAudits = auditsRef.current || [];
+      const exists = baseAudits.some(a => a.id === pending.id);
+      const updatedAudits = exists
+        ? baseAudits.map(a => a.id === pending.id ? pending : a)
+        : [pending, ...baseAudits];
+      onSaveAuditsRef.current(updatedAudits);
+    }
+  };
+
+  const scheduleDebouncedAuditSave = (updatedSession: AuditSession) => {
+    pendingAuditSessionRef.current = updatedSession;
+    if (debouncedAuditSaveTimerRef.current) {
+      clearTimeout(debouncedAuditSaveTimerRef.current);
+    }
+    debouncedAuditSaveTimerRef.current = setTimeout(() => {
+      debouncedAuditSaveTimerRef.current = null;
+      const pending = pendingAuditSessionRef.current;
+      if (pending) {
+        pendingAuditSessionRef.current = null;
+        const baseAudits = auditsRef.current || [];
+        const exists = baseAudits.some(a => a.id === pending.id);
+        const updatedAudits = exists
+          ? baseAudits.map(a => a.id === pending.id ? pending : a)
+          : [pending, ...baseAudits];
+        onSaveAuditsRef.current(updatedAudits);
+      }
+    }, 350);
+  };
+
+  useEffect(() => {
+    return () => {
+      flushPendingAuditSave();
+    };
+  }, []);
 
   // Custom Confirmation Modal state
   const [confirmModal, setConfirmModal] = useState<{
@@ -171,10 +294,6 @@ export default function ConferenteView({
     };
   };
   
-  // Stopwatch state
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const stopwatchInterval = useRef<NodeJS.Timeout | null>(null);
-
   // Form states for new return
   const [routeMap, setRouteMap] = useState('');
   const [selectedRouteMaps, setSelectedRouteMaps] = useState<string[]>([]);
@@ -600,6 +719,7 @@ export default function ConferenteView({
 
   const handleApplyCalculator = () => {
     if (!activeSession) return;
+    clearPendingDebouncedSave();
     const isRecon = activeSession.status === 'reconferencia';
 
     const updatedAssets = activeSession.assets.map(asset => {
@@ -637,14 +757,15 @@ export default function ConferenteView({
     };
   }, [activeSession]);
 
-  // Load photos for active session when it changes
+  // Load photos ONLY when switching activeSession.id (not on every quantity keypress)
+  const activeSessionId = activeSession?.id || null;
   useEffect(() => {
-    if (activeSession) {
-      loadSessionPhotos(activeSession.id);
-      
+    if (activeSessionId && activeSession) {
+      loadSessionPhotos(activeSessionId);
+
       // Only reset form inputs if we are switching to a DIFFERENT session
-      if (lastSessionIdRef.current !== activeSession.id) {
-        lastSessionIdRef.current = activeSession.id;
+      if (lastSessionIdRef.current !== activeSessionId) {
+        lastSessionIdRef.current = activeSessionId;
         if (activeSession.assets && activeSession.assets.length > 0) {
           setRefugoAssetId(activeSession.assets[0].assetId);
         } else {
@@ -655,12 +776,20 @@ export default function ConferenteView({
         setRefugoPhotos([]);
         setRefugoFormValues({});
       }
+
+      const handlePhotosUpdated = () => {
+        loadSessionPhotos(activeSessionId);
+      };
+      window.addEventListener('logiroute_photos_updated', handlePhotosUpdated);
+      return () => {
+        window.removeEventListener('logiroute_photos_updated', handlePhotosUpdated);
+      };
     } else {
       lastSessionIdRef.current = null;
       setSessionPhotos([]);
       stopWebcamStream();
     }
-  }, [activeSession]);
+  }, [activeSessionId]);
 
   // Clear temporary recount input drafts when switching session or status
   useEffect(() => {
@@ -707,7 +836,19 @@ export default function ConferenteView({
           return;
         }
 
-        if (JSON.stringify(currentInAudits) !== JSON.stringify(activeSession)) {
+        // Avoid running expensive deep JSON comparison if reference is identical or user has an active local typing debounce
+        if (currentInAudits === activeSession) return;
+        if (pendingAuditSessionRef.current?.id === currentInAudits.id) return;
+
+        const sameQuickSignature =
+          currentInAudits.updatedAt === activeSession.updatedAt &&
+          currentInAudits.status === activeSession.status &&
+          currentInAudits.items?.length === activeSession.items?.length &&
+          currentInAudits.assets?.length === activeSession.assets?.length &&
+          currentInAudits.refugos?.length === activeSession.refugos?.length &&
+          currentInAudits.exchanges?.length === activeSession.exchanges?.length;
+
+        if (!sameQuickSignature || JSON.stringify(currentInAudits) !== JSON.stringify(activeSession)) {
           // If there is an active concurrency conflict, we do NOT auto-overwrite,
           // giving the user the opportunity to resolve or sync via the banner
           const hasConflict = currentInAudits.updatedAt && 
@@ -742,25 +883,23 @@ export default function ConferenteView({
 
   // Auto-repair empty assets array in activeSession for resilience
   useEffect(() => {
-    if (activeSession) {
-      if (!activeSession.assets || activeSession.assets.length === 0) {
-        console.log("Repairing activeSession: assets array is empty or undefined");
-        const assetsSource = activeAssets && activeAssets.length > 0 ? activeAssets : DEFAULT_ACTIVE_ASSETS;
-        const initialAssets: AuditAssetItem[] = assetsSource.map(asset => ({
-          assetId: asset.id,
-          assetName: asset.name,
-          cost: asset.cost,
-          physicalQty: 0
-        }));
-        
-        const updatedSession = { ...activeSession, assets: initialAssets };
-        setActiveSession(updatedSession);
-        
-        const updatedAudits = audits.map(a => a.id === activeSession.id ? updatedSession : a);
-        onSaveAudits(updatedAudits);
-      }
+    if (activeSession && (!activeSession.assets || activeSession.assets.length === 0)) {
+      console.log("Repairing activeSession: assets array is empty or undefined");
+      const assetsSource = activeAssets && activeAssets.length > 0 ? activeAssets : DEFAULT_ACTIVE_ASSETS;
+      const initialAssets: AuditAssetItem[] = assetsSource.map(asset => ({
+        assetId: asset.id,
+        assetName: asset.name,
+        cost: asset.cost,
+        physicalQty: 0
+      }));
+      
+      const updatedSession = { ...activeSession, assets: initialAssets };
+      setActiveSession(updatedSession);
+      
+      const updatedAudits = audits.map(a => a.id === activeSession.id ? updatedSession : a);
+      onSaveAudits(updatedAudits);
     }
-  }, [activeSession, activeAssets, audits, onSaveAudits]);
+  }, [activeSession?.id, activeAssets]);
 
   const loadSessionPhotos = async (auditId: string) => {
     try {
@@ -769,37 +908,6 @@ export default function ConferenteView({
     } catch (e) {
       console.error('Failed to load photos from IndexedDB:', e);
     }
-  };
-
-  // Start ticking stopwatch when session is active
-  useEffect(() => {
-    if (activeSession && activeSession.status !== 'finalizado_ok' && activeSession.status !== 'finalizado_divergente') {
-      const updateStopwatch = () => {
-        if (activeSession.isSuspended) {
-          setElapsedSeconds(Math.floor((activeSession.totalCountingDurationMs || 0) / 1000));
-        } else {
-          const baseMs = activeSession.totalCountingDurationMs || 0;
-          const currentIntervalMs = activeSession.lastTimerStart 
-            ? (Date.now() - new Date(activeSession.lastTimerStart).getTime()) 
-            : 0;
-          setElapsedSeconds(Math.floor((baseMs + currentIntervalMs) / 1000));
-        }
-      };
-      updateStopwatch();
-      stopwatchInterval.current = setInterval(updateStopwatch, 1000);
-    } else {
-      if (stopwatchInterval.current) clearInterval(stopwatchInterval.current);
-      setElapsedSeconds(0);
-    }
-    return () => {
-      if (stopwatchInterval.current) clearInterval(stopwatchInterval.current);
-    };
-  }, [activeSession]);
-
-  const formatTime = (secs: number) => {
-    const m = Math.floor(secs / 60).toString().padStart(2, '0');
-    const s = (secs % 60).toString().padStart(2, '0');
-    return `${m}:${s}`;
   };
 
   // Auto-persist active session ID in localStorage and restore on mount
@@ -928,6 +1036,11 @@ export default function ConferenteView({
 
   const handleExitSession = () => {
     if (!activeSession) return;
+    if (debouncedAuditSaveTimerRef.current) {
+      clearTimeout(debouncedAuditSaveTimerRef.current);
+      debouncedAuditSaveTimerRef.current = null;
+    }
+    pendingAuditSessionRef.current = null;
 
     const latestInAudits = audits.find(a => a.id === activeSession.id);
     if (
@@ -955,6 +1068,11 @@ export default function ConferenteView({
 
   const handleUrgentSuspend = (notes: string) => {
     if (!activeSession) return;
+    if (debouncedAuditSaveTimerRef.current) {
+      clearTimeout(debouncedAuditSaveTimerRef.current);
+      debouncedAuditSaveTimerRef.current = null;
+    }
+    pendingAuditSessionRef.current = null;
     const nowStr = new Date().toISOString();
     
     let updatedSession = { ...activeSession };
@@ -982,6 +1100,7 @@ export default function ConferenteView({
 
   const handleUrgentResume = () => {
     if (!activeSession) return;
+    clearPendingDebouncedSave();
     const nowStr = new Date().toISOString();
 
     const updatedSession: AuditSession = {
@@ -1006,6 +1125,7 @@ export default function ConferenteView({
 
   const handleUpdateBlitzData = (boxes: number, avarias: number) => {
     if (!activeSession) return;
+    clearPendingDebouncedSave();
     const updatedSession = {
       ...activeSession,
       blitzBoxesChecked: boxes,
@@ -1671,6 +1791,11 @@ export default function ConferenteView({
       updatedItems.push(newItem);
     }
 
+    if (debouncedAuditSaveTimerRef.current) {
+      clearTimeout(debouncedAuditSaveTimerRef.current);
+      debouncedAuditSaveTimerRef.current = null;
+    }
+    pendingAuditSessionRef.current = null;
     const updatedSession = { ...activeSession, items: updatedItems };
     setActiveSession(updatedSession);
     
@@ -1715,6 +1840,11 @@ export default function ConferenteView({
       });
     }
 
+    if (debouncedAuditSaveTimerRef.current) {
+      clearTimeout(debouncedAuditSaveTimerRef.current);
+      debouncedAuditSaveTimerRef.current = null;
+    }
+    pendingAuditSessionRef.current = null;
     const updatedSession = {
       ...activeSession,
       exchanges: updatedExchanges
@@ -1733,6 +1863,11 @@ export default function ConferenteView({
 
   const handleDeleteExchangeFromSession = (productCode: string) => {
     if (!activeSession) return;
+    if (debouncedAuditSaveTimerRef.current) {
+      clearTimeout(debouncedAuditSaveTimerRef.current);
+      debouncedAuditSaveTimerRef.current = null;
+    }
+    pendingAuditSessionRef.current = null;
     const existingExchanges = activeSession.exchanges || [];
     const updatedExchanges = existingExchanges.filter(e => !(e.productCode === productCode && e.type === 'TROCA'));
 
@@ -1762,8 +1897,7 @@ export default function ConferenteView({
 
     const updatedSession = { ...activeSession, items: updatedItems };
     setActiveSession(updatedSession);
-    const updatedAudits = audits.map(a => a.id === activeSession.id ? updatedSession : a);
-    onSaveAudits(updatedAudits);
+    scheduleDebouncedAuditSave(updatedSession);
   };
 
   const handleUpdateAssetQty = (assetId: string, val: number) => {
@@ -1808,8 +1942,7 @@ export default function ConferenteView({
 
     const updatedSession = { ...activeSession, assets: updatedAssets };
     setActiveSession(updatedSession);
-    const updatedAudits = audits.map(a => a.id === activeSession.id ? updatedSession : a);
-    onSaveAudits(updatedAudits);
+    scheduleDebouncedAuditSave(updatedSession);
   };
 
   const handleUpdateRefugo = (assetId: string, qtyVal: string, reasonVal: string) => {
@@ -1840,12 +1973,16 @@ export default function ConferenteView({
     
     const updatedSession = { ...activeSession, refugos: updatedRefugos };
     setActiveSession(updatedSession);
-    const updatedAudits = audits.map(a => a.id === activeSession.id ? updatedSession : a);
-    onSaveAudits(updatedAudits);
+    scheduleDebouncedAuditSave(updatedSession);
   };
 
   const handleRemoveProduct = (code: string) => {
     if (!activeSession) return;
+    if (debouncedAuditSaveTimerRef.current) {
+      clearTimeout(debouncedAuditSaveTimerRef.current);
+      debouncedAuditSaveTimerRef.current = null;
+    }
+    pendingAuditSessionRef.current = null;
     const updatedItems = activeSession.items.map(item => {
       if (item.productCode === code) {
         if (activeSession.status === 'reconferencia') {
@@ -1874,6 +2011,11 @@ export default function ConferenteView({
 
   const handleConfirmBlitz = async () => {
     if (!activeSession || isFinishingAudit) return;
+    if (debouncedAuditSaveTimerRef.current) {
+      clearTimeout(debouncedAuditSaveTimerRef.current);
+      debouncedAuditSaveTimerRef.current = null;
+    }
+    pendingAuditSessionRef.current = null;
     const latestAudit = audits.find(a => a.id === activeSession.id);
     if (latestAudit && (latestAudit.status === 'finalizado_ok' || latestAudit.status === 'finalizado_divergente') && !latestAudit.reopened && !latestAudit.reopeningRequested) {
       alert(`O mapa ${latestAudit.routeMap} já foi finalizado pela conciliação fiscal. Esta tela será fechada para evitar alteração indevida.`);
@@ -2024,6 +2166,11 @@ export default function ConferenteView({
   // Action: Complete physical conference & save
   const handleFinishPhysicalAudit = async () => {
     if (!activeSession || isFinishingAudit) return;
+    if (debouncedAuditSaveTimerRef.current) {
+      clearTimeout(debouncedAuditSaveTimerRef.current);
+      debouncedAuditSaveTimerRef.current = null;
+    }
+    pendingAuditSessionRef.current = null;
     const latestAudit = audits.find(a => a.id === activeSession.id);
     if (latestAudit && (latestAudit.status === 'finalizado_ok' || latestAudit.status === 'finalizado_divergente') && !latestAudit.reopened && !latestAudit.reopeningRequested) {
       alert(`O mapa ${latestAudit.routeMap} já foi finalizado pela conciliação fiscal. Esta tela será fechada para evitar alteração indevida.`);
@@ -2663,26 +2810,64 @@ export default function ConferenteView({
 
     const processedMaps = new Set<string>();
 
+    // Pre-index audits and importedRoutes by map code to avoid O(M*N) scans
+    const auditsByMapKey = new Map<string, AuditSession[]>();
+    const addAuditToIndex = (key: string, a: AuditSession) => {
+      if (!key) return;
+      const arr = auditsByMapKey.get(key);
+      if (arr) {
+        if (!arr.includes(a)) arr.push(a);
+      } else {
+        auditsByMapKey.set(key, [a]);
+      }
+    };
+    (audits || []).forEach(a => {
+      if (!a) return;
+      addAuditToIndex((a.routeMap || '').trim().toUpperCase(), a);
+      addAuditToIndex(normalizeMapCode(a.routeMap || '').toUpperCase(), a);
+      if (a.unifiedMaps) {
+        a.unifiedMaps.forEach(m => {
+          addAuditToIndex((m || '').trim().toUpperCase(), a);
+          addAuditToIndex(normalizeMapCode(m || '').toUpperCase(), a);
+        });
+      }
+    });
+
+    const importedByMapUpper = new Map<string, ImportedRoute>();
+    (importedRoutes || []).forEach(r => {
+      if (!r) return;
+      const key = (r.routeMap || '').toUpperCase();
+      if (key && !importedByMapUpper.has(key)) {
+        importedByMapUpper.set(key, r);
+      }
+    });
+
     // 1. Process imported routes
     (importedRoutes || []).forEach(route => {
       if (!route) return;
-      const routeMapUpper = (route.routeMap || '').toUpperCase();
+      const routeMapUpper = (route.routeMap || '').trim().toUpperCase();
       const routeMapNorm = normalizeMapCode(route.routeMap || '').toUpperCase();
 
-      const matchingAudit = (audits || []).find(a => {
-        if (!a) return false;
-        const aNorm = normalizeMapCode(a.routeMap || '').toUpperCase();
-        const matchesMap = aNorm === routeMapNorm || (a.routeMap || '').toUpperCase() === routeMapUpper ||
-          (a.unifiedMaps && a.unifiedMaps.some(m => normalizeMapCode(m || '').toUpperCase() === routeMapNorm || (m || '').toUpperCase() === routeMapUpper));
-        if (!matchesMap) return false;
+      const normMatches = auditsByMapKey.get(routeMapNorm);
+      const upperMatches = routeMapUpper !== routeMapNorm ? auditsByMapKey.get(routeMapUpper) : undefined;
+      const candidateAudits = normMatches && upperMatches
+        ? [...normMatches, ...upperMatches.filter(a => !normMatches.includes(a))]
+        : (normMatches || upperMatches || []);
+      let matchingAudit: AuditSession | undefined;
+      let isClosedInAuditsFlag = false;
 
+      for (let i = 0; i < candidateAudits.length; i++) {
+        const a = candidateAudits[i];
         if (route.routeDate) {
           const aDate = a.arrivalDate || a.routeDate || a.endTime?.split('T')[0] || a.startTime?.split('T')[0];
-          if (aDate && aDate !== route.routeDate) return false;
+          if (aDate && aDate !== route.routeDate) continue;
         }
-
-        return true;
-      });
+        if (!matchingAudit) matchingAudit = a;
+        const isFinished = a.status === 'finalizado_ok' || a.status === 'finalizado_divergente' || (a.status as string) === 'fechado' || (a as any).pdfDownloaded === true || (a as any).surplusFlowStatus === 'BAIXADO';
+        if (isFinished && !a.reopeningRequested) {
+          isClosedInAuditsFlag = true;
+        }
+      }
 
       const isFinalizedInAudit = matchingAudit && (
         matchingAudit.status === 'finalizado_ok' || 
@@ -2693,7 +2878,7 @@ export default function ConferenteView({
       );
       const isReopeningReq = matchingAudit?.reopeningRequested === true;
       const isSubmittedToFiscal = matchingAudit && (matchingAudit.status === 'conferido_fisico' || matchingAudit.status === 'recontagem_finalizada');
-      const isClosed = (isRouteClosedInAudits(route.routeMap || '', route.routeDate) || (route.status as string) === 'fechado' || isFinalizedInAudit) && !isReopeningReq;
+      const isClosed = (isClosedInAuditsFlag || (route.status as string) === 'fechado' || isFinalizedInAudit) && !isReopeningReq;
 
       // Only include routes that are truly open/pending for physical count
       if ((!isClosed && !isSubmittedToFiscal && (route.status as string) !== 'em_analise') || isReopeningReq) {
@@ -2774,7 +2959,7 @@ export default function ConferenteView({
           effectiveStatus = 'conferindo';
         }
 
-        const matchingRoute = (importedRoutes || []).find(r => r && (r.routeMap || '').toUpperCase() === auditMapUpper);
+        const matchingRoute = importedByMapUpper.get(auditMapUpper);
         const isRouteBlitz = audit.isBlitz || matchingRoute?.isBlitz || false;
 
         // Status de descarregamento estritamente condicionado ao registro do empilhador
@@ -2823,16 +3008,27 @@ export default function ConferenteView({
     return list;
   }, [importedRoutes, audits]);
 
-  // Helper stats for today
+  // Helper stats for today (single pass memoized)
   const mapsToday = openRoutesList.length;
-  const mapsCompletedOk = audits.filter(a => a.status === 'finalizado_ok').length;
-  const mapsCompletedDivergent = audits.filter(a => a.status === 'finalizado_divergente').length;
   const mapsInCount = openRoutesList.length;
-  const mapsInRecon = audits.filter(a => a.status === 'reconferencia').length;
+  const { mapsCompletedOk, mapsCompletedDivergent, mapsInRecon } = useMemo(() => {
+    let ok = 0;
+    let div = 0;
+    let recon = 0;
+    for (const a of audits) {
+      if (!a) continue;
+      if (a.status === 'finalizado_ok') ok++;
+      else if (a.status === 'finalizado_divergente') div++;
+      else if (a.status === 'reconferencia') recon++;
+    }
+    return { mapsCompletedOk: ok, mapsCompletedDivergent: div, mapsInRecon: recon };
+  }, [audits]);
   const mapsCompletedCount = mapsCompletedOk + mapsCompletedDivergent;
 
-  // Calculate most requested products from historic audits to optimize entry speed
+  // Only index historic product counts when user is actually typing in a product/exchange search box
+  const isSearchingAnyProduct = Boolean((productSearch && !selectedProductCode) || (exchangeSearch && !selectedExchangeProductCode));
   const productUsageCounts = useMemo(() => {
+    if (!isSearchingAnyProduct) return {};
     const counts: Record<string, number> = {};
     audits.forEach(audit => {
       if (audit.items) {
@@ -2847,10 +3043,11 @@ export default function ConferenteView({
       }
     });
     return counts;
-  }, [audits]);
+  }, [audits, isSearchingAnyProduct]);
 
   const filteredProducts = useMemo(() => {
     const searchLower = (productSearch || '').toLowerCase().trim();
+    if (!searchLower || selectedProductCode) return [];
     return (products || [])
       .filter(p => {
         if (!p) return false;
@@ -2864,10 +3061,11 @@ export default function ConferenteView({
         return countB - countA;
       })
       .slice(0, 5);
-  }, [products, productSearch, productUsageCounts]);
+  }, [products, productSearch, selectedProductCode, productUsageCounts]);
 
   const filteredExchangeProducts = useMemo(() => {
     const searchLower = (exchangeSearch || '').toLowerCase().trim();
+    if (!searchLower || selectedExchangeProductCode) return [];
     return (products || [])
       .filter(p => {
         if (!p) return false;
@@ -2881,7 +3079,7 @@ export default function ConferenteView({
         return countB - countA;
       })
       .slice(0, 5);
-  }, [products, exchangeSearch, productUsageCounts]);
+  }, [products, exchangeSearch, selectedExchangeProductCode, productUsageCounts]);
 
   const getMergedFinalItems = (session: AuditSession): AuditItem[] => {
     const normalizeProdCode = (c?: string) => {
@@ -2969,12 +3167,12 @@ export default function ConferenteView({
     });
   }, [activeSession]);
 
-  const pendingOrActiveAudits = audits.filter(a => 
+  const pendingOrActiveAudits = useMemo(() => audits.filter(a => 
     (a.status === 'em_aberto' || a.status === 'reconferencia' || a.reopeningRequested === true) &&
     (a.status as string) !== 'fechado' &&
     a.status !== 'finalizado_ok' &&
     a.status !== 'finalizado_divergente'
-  );
+  ), [audits]);
 
   return (
     <div className="w-full px-2 sm:px-6 lg:px-8 pt-3 pb-28 sm:pb-12 animate-fade-in overflow-x-hidden" id="conferente_view">
@@ -3966,11 +4164,15 @@ export default function ConferenteView({
             {/* Timer Block */}
             <div className="flex items-center space-x-3 bg-slate-850 p-3 rounded-lg border border-slate-800 self-stretch md:self-auto justify-between md:justify-start">
               <div className="flex items-center space-x-2">
-                <Clock className="h-5 w-5 text-amber-500 animate-spin-slow" />
+                <Clock className="h-5 w-5 text-amber-500" />
                 <div>
                   <span className="text-xxs text-slate-400 block font-sans">TEMPO DECORRIDO</span>
                   <span className="font-mono text-xl font-bold tracking-wider text-amber-400">
-                    {formatTime(elapsedSeconds)}
+                    <SessionStopwatch
+                      isSuspended={activeSession.isSuspended}
+                      totalCountingDurationMs={activeSession.totalCountingDurationMs}
+                      lastTimerStart={activeSession.lastTimerStart}
+                    />
                   </span>
                 </div>
               </div>
@@ -4073,7 +4275,12 @@ export default function ConferenteView({
                 <div className="grid grid-cols-2 gap-4 pt-2 border-t border-slate-200 text-xs">
                   <div>
                     <span className="text-[10px] text-slate-400 block font-sans font-bold">Tempo acumulado:</span>
-                    <span className="font-bold text-slate-700">{formatTime(elapsedSeconds)}</span>
+                    <span className="font-bold text-slate-700">
+                      <SessionStopwatch
+                        isSuspended={true}
+                        totalCountingDurationMs={activeSession.totalCountingDurationMs}
+                      />
+                    </span>
                   </div>
                   <div>
                     <span className="text-[10px] text-slate-400 block font-sans font-bold">Pausado por:</span>
@@ -4186,8 +4393,9 @@ export default function ConferenteView({
                   </div>
                 ) : (
                   <div>
-                    {/* MOBILE VIEW (card list) */}
-                    <div className="block sm:hidden space-y-3">
+                    {isMobileViewport ? (
+                    /* MOBILE VIEW (card list) */
+                    <div className="space-y-3">
                       {visibleItems.map((item) => {
                         const isReconferindo = activeSession.status === 'reconferencia';
                         const difference = isReconferindo 
@@ -4321,9 +4529,9 @@ export default function ConferenteView({
                         );
                       })}
                     </div>
-
-                    {/* DESKTOP VIEW (table) */}
-                    <div className="hidden sm:block border border-slate-100 rounded-lg overflow-x-auto shadow-xs">
+                    ) : (
+                    /* DESKTOP VIEW (table) */
+                    <div className="border border-slate-100 rounded-lg overflow-x-auto shadow-xs">
                       <table className="min-w-full divide-y divide-slate-100 text-left">
                         <thead className="bg-slate-50">
                           <tr>
@@ -4411,6 +4619,7 @@ export default function ConferenteView({
                         </tbody>
                       </table>
                     </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -5242,6 +5451,7 @@ export default function ConferenteView({
                           <button
                             type="button"
                             onClick={() => {
+                              clearPendingDebouncedSave();
                               const updatedRefugos = (activeSession.refugos || []).filter(r => r.id !== ref.id);
                               const updatedSession = { ...activeSession, refugos: updatedRefugos };
                               setActiveSession(updatedSession);
